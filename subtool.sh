@@ -42,6 +42,31 @@ header(){ printf "\n${BOLD}${BLUE}── %s ──${NC}\n" "$*"; }
 
 die() { err "$1"; exit 1; }
 
+# URL encode (pure bash via jq)
+urlencode() { jq -sRr @uri <<< "$1" | sed 's/%0A$//'; }
+
+# JSON escape file content for API calls (via jq)
+json_escape_file() { jq -sR . < "$1"; }
+
+# Timestamp SRT -> millisecondes
+ts_to_ms() {
+    local ts="$1"
+    local h="${ts%%:*}"; ts="${ts#*:}"
+    local m="${ts%%:*}"; ts="${ts#*:}"
+    local s="${ts%%[,.]*}"; local ms="${ts##*[,.]}"
+    echo $(( 10#$h * 3600000 + 10#$m * 60000 + 10#$s * 1000 + 10#$ms ))
+}
+
+# Millisecondes -> Timestamp SRT
+ms_to_ts() {
+    local ms=$1
+    [[ $ms -lt 0 ]] && ms=0
+    local h=$((ms / 3600000)); ms=$((ms % 3600000))
+    local m=$((ms / 60000)); ms=$((ms % 60000))
+    local s=$((ms / 1000)); ms=$((ms % 1000))
+    printf '%02d:%02d:%02d,%03d' "$h" "$m" "$s" "$ms"
+}
+
 # ── Config ────────────────────────────────────────────────────────────────────
 init_config() {
     mkdir -p "$CONFIG_DIR" "$CACHE_DIR"
@@ -133,7 +158,7 @@ search_opensubtitles() {
     if [[ -n "$imdb_id" ]]; then
         params+="&imdb_id=$imdb_id"
     elif [[ -n "$query" ]]; then
-        params+="&query=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$query'))")"
+        params+="&query=$(urlencode "$query")"
     fi
     [[ -n "$season" ]] && params+="&season_number=$season"
     [[ -n "$episode" ]] && params+="&episode_number=$episode"
@@ -198,7 +223,7 @@ search_podnapisi() {
     esac
 
     local encoded_query
-    encoded_query=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$query'))")
+    encoded_query=$(urlencode "$query")
 
     local resp
     resp=$(curl -sf "https://www.podnapisi.net/subtitles/search/old?keywords=$encoded_query&language=$lang_code&output_type=json" 2>/dev/null) || return 1
@@ -237,7 +262,7 @@ search_subdl() {
     [[ -z "${SUBDL_API_KEY:-}" ]] && { warn "SubDL: API key manquante (SUBDL_API_KEY)" >&2; return 1; }
 
     local encoded_query
-    encoded_query=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$query'))")
+    encoded_query=$(urlencode "$query")
 
     local resp
     resp=$(curl -sf "https://api.subdl.com/api/v1/subtitles?api_key=${SUBDL_API_KEY}&film_name=$encoded_query&languages=$lang" 2>/dev/null) || return 1
@@ -421,7 +446,7 @@ translate_with_zai_codeplan() {
             \"model\": \"$model\",
             \"messages\": [
                 {\"role\": \"system\", \"content\": \"You are a professional subtitle translator. Preserve all SRT formatting exactly.\"},
-                {\"role\": \"user\", \"content\": $(python3 -c "import json; print(json.dumps('$prompt\n\n' + open('$input').read()))")}
+                {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ],
             \"temperature\": 0.3
         }" 2>/dev/null) || { err "Erreur API Z.ai"; return 1; }
@@ -435,10 +460,8 @@ translate_with_openai() {
     local model="${AI_MODEL:-$MODEL_OPENAI}"
     info "Traduction avec OpenAI ($model)..."
 
-    local content
-    content=$(<"$input")
     local escaped_content
-    escaped_content=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" <<< "$content")
+    escaped_content=$(jq -sR . < "$input")
 
     local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
 
@@ -450,7 +473,7 @@ translate_with_openai() {
             \"model\": \"$model\",
             \"messages\": [
                 {\"role\": \"system\", \"content\": \"You are a professional subtitle translator. Preserve all SRT formatting exactly.\"},
-                {\"role\": \"user\", \"content\": $(python3 -c "import json; print(json.dumps('$prompt\n\n' + open('$input').read()))")}
+                {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ],
             \"temperature\": 0.3
         }" 2>/dev/null) || { err "Erreur API OpenAI"; return 1; }
@@ -475,7 +498,7 @@ translate_with_claude() {
             \"model\": \"$model\",
             \"max_tokens\": 8192,
             \"messages\": [
-                {\"role\": \"user\", \"content\": $(python3 -c "import json; print(json.dumps('$prompt\n\n' + open('$input').read()))")}
+                {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ]
         }" 2>/dev/null) || { err "Erreur API Claude"; return 1; }
 
@@ -497,7 +520,7 @@ translate_with_mistral() {
         -d "{
             \"model\": \"$model\",
             \"messages\": [
-                {\"role\": \"user\", \"content\": $(python3 -c "import json; print(json.dumps('$prompt\n\n' + open('$input').read()))")}
+                {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ],
             \"temperature\": 0.3
         }" 2>/dev/null) || { err "Erreur API Mistral"; return 1; }
@@ -518,7 +541,7 @@ translate_with_gemini() {
         -H "Content-Type: application/json" \
         -d "{
             \"contents\": [{
-                \"parts\": [{\"text\": $(python3 -c "import json; print(json.dumps('$prompt\n\n' + open('$input').read()))")}]
+                \"parts\": [{\"text\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}]
             }],
             \"generationConfig\": {\"temperature\": 0.3}
         }" 2>/dev/null) || { err "Erreur API Gemini"; return 1; }
@@ -1256,62 +1279,46 @@ cmd_clean() {
 
     header "Nettoyage: $(basename "$FILE_PATH")"
 
-    local removed=0
+    local html_count hi_count
+    html_count=$(grep -cE '<[^>]+>' "$FILE_PATH" || true)
+    hi_count=$(grep -cE '^\s*[\[\(].*[\]\)]' "$FILE_PATH" || true)
 
-    python3 -c "
-import re, sys
+    [[ "$html_count" -gt 0 ]] && echo "  Tags HTML supprimes: $html_count" >&2
+    [[ "$hi_count" -gt 0 ]] && echo "  Tags HI/SDH supprimes: $hi_count" >&2
 
-with open('$FILE_PATH', 'r', encoding='utf-8', errors='replace') as f:
-    content = f.read()
+    # Clean via sed pipeline
+    sed -E \
+        -e 's/<[^>]+>//g' \
+        -e '/^\s*[\[\(].*[\]\)]\s*$/d' \
+        -e '/^\s*♪.*♪\s*$/d' \
+        -e '/^\s*#.*#\s*$/d' \
+        -e '/[Ss]ubscene/Id' \
+        -e '/[Oo]pen[Ss]ubtitles/Id' \
+        -e '/[Aa]ddic7ed/Id' \
+        -e '/[Ss]ynced.*[Bb]y/Id' \
+        -e '/[Ss]ubtitle.*[Bb]y/Id' \
+        -e '/[Rr]ipped.*[Bb]y/Id' \
+        -e '/[Dd]ownloaded.*[Ff]rom/Id' \
+        -e '/www\..*\.(com|net|org)/Id' \
+        "$FILE_PATH" | \
+    awk '
+    # Remove empty SRT blocks (number + timestamp with no text)
+    BEGIN { RS=""; ORS="\n\n" }
+    {
+        # Split block into lines
+        n = split($0, lines, "\n")
+        # Check if block has text content (not just number + timestamp)
+        has_text = 0
+        for (i = 1; i <= n; i++) {
+            if (lines[i] !~ /^[0-9]+$/ && lines[i] !~ /^[0-9]{2}:[0-9]{2}:[0-9]{2}/ && lines[i] !~ /^\s*$/) {
+                has_text = 1
+                break
+            }
+        }
+        if (has_text) print $0
+    }' | sed '/^$/N;/^\n$/d' > "$output"
 
-original = content
-removed = 0
-
-# Supprimer tags HTML (<i>, <b>, <font>, etc.)
-cleaned = re.sub(r'<[^>]+>', '', content)
-if cleaned != content:
-    diff = len(re.findall(r'<[^>]+>', content))
-    removed += diff
-    print(f'  Tags HTML supprimes: {diff}', file=sys.stderr)
-content = cleaned
-
-# Supprimer tags HI/SDH: [musique], (rires), ♪ lignes musicales ♪
-cleaned = re.sub(r'^\s*[\[\(].*?[\]\)]\s*$', '', content, flags=re.MULTILINE)
-diff = content.count('\n') - cleaned.count('\n')
-if diff > 0:
-    removed += diff
-    print(f'  Tags HI/SDH supprimes: {diff}', file=sys.stderr)
-content = cleaned
-
-# Supprimer lignes musicales ♪...♪
-cleaned = re.sub(r'^\s*♪.*?♪\s*$', '', content, flags=re.MULTILINE)
-cleaned = re.sub(r'^\s*#.*?#\s*$', '', cleaned, flags=re.MULTILINE)
-
-# Supprimer pubs/watermarks courants
-ad_patterns = [
-    r'(?i)^.*subscene.*$',
-    r'(?i)^.*opensubtitles.*$',
-    r'(?i)^.*addic7ed.*$',
-    r'(?i)^.*synced.*by.*$',
-    r'(?i)^.*subtitle.*by.*$',
-    r'(?i)^.*ripped.*by.*$',
-    r'(?i)^.*downloaded.*from.*$',
-    r'(?i)^.*www\..*\.(com|net|org).*$',
-]
-for pat in ad_patterns:
-    cleaned = re.sub(pat, '', cleaned, flags=re.MULTILINE)
-
-# Supprimer les blocs SRT vides (numero + timestamp sans texte)
-cleaned = re.sub(r'\d+\r?\n\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}\r?\n\s*\r?\n', '', cleaned)
-
-# Supprimer lignes vides multiples
-cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-
-with open('$output', 'w', encoding='utf-8') as f:
-    f.write(cleaned.strip() + '\n')
-
-print(f'  Total modifications: {removed}+', file=sys.stderr)
-" 2>&1
+    echo "  Total modifications: $((html_count + hi_count))+" >&2
 
     log "Fichier nettoye: $output"
 }
@@ -1331,45 +1338,32 @@ cmd_sync() {
 
     header "Sync: $(basename "$FILE_PATH") (${SYNC_SHIFT}ms)"
 
-    python3 -c "
-import re, sys
+    local shift_val="${SYNC_SHIFT}"
 
-shift_ms = int('${SYNC_SHIFT}')
+    awk -v shift="$shift_val" '
+    function ts2ms(ts,    a, b) {
+        split(ts, a, ":")
+        split(a[3], b, ",")
+        return a[1]*3600000 + a[2]*60000 + b[1]*1000 + b[2]
+    }
+    function ms2ts(ms,    h, m, s) {
+        if (ms < 0) ms = 0
+        h = int(ms / 3600000); ms = ms % 3600000
+        m = int(ms / 60000); ms = ms % 60000
+        s = int(ms / 1000); ms = ms % 1000
+        return sprintf("%02d:%02d:%02d,%03d", h, m, s, ms)
+    }
+    /^[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}/ {
+        split($0, parts, " --> ")
+        start = ts2ms(parts[1]) + shift
+        end = ts2ms(parts[2]) + shift
+        print ms2ts(start) " --> " ms2ts(end)
+        next
+    }
+    { print }
+    ' "$FILE_PATH" > "$output"
 
-def ts_to_ms(ts):
-    h, m, s_ms = ts.split(':')
-    s, ms = s_ms.split(',')
-    return int(h)*3600000 + int(m)*60000 + int(s)*1000 + int(ms)
-
-def ms_to_ts(ms):
-    if ms < 0: ms = 0
-    h = ms // 3600000
-    ms %= 3600000
-    m = ms // 60000
-    ms %= 60000
-    s = ms // 1000
-    ms %= 1000
-    return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
-
-with open('$FILE_PATH', 'r', encoding='utf-8', errors='replace') as f:
-    content = f.read()
-
-def shift_timestamp(match):
-    start = ts_to_ms(match.group(1)) + shift_ms
-    end = ts_to_ms(match.group(2)) + shift_ms
-    return f'{ms_to_ts(start)} --> {ms_to_ts(end)}'
-
-result = re.sub(
-    r'(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})',
-    shift_timestamp,
-    content
-)
-
-with open('$output', 'w', encoding='utf-8') as f:
-    f.write(result)
-
-print(f'Decalage applique: {shift_ms:+d}ms', file=sys.stderr)
-" 2>&1
+    echo "Decalage applique: ${shift_val}ms" >&2
 
     log "Fichier synced: $output"
 }
@@ -1389,85 +1383,108 @@ cmd_convert() {
 
     header "Conversion: ${src_ext} -> ${CONVERT_FORMAT}"
 
-    python3 -c "
-import re, sys
+    awk -v src="$src_ext" -v tgt="$CONVERT_FORMAT" -v outfile="$output" '
+    function srt_ts_to_vtt(ts) { gsub(",", ".", ts); return ts }
+    function srt_ts_to_ass(ts,    a, b) {
+        split(ts, a, ":")
+        split(a[3], b, ",")
+        return int(a[1]) ":" a[2] ":" b[1] "." substr(b[2], 1, 2)
+    }
+    function ass_ts_to_srt(ts,    a, b) {
+        split(ts, a, ":")
+        split(a[3], b, ".")
+        return sprintf("%02d:%s:%s,%03d", int(a[1]), a[2], b[1], int(b[2]) * 10)
+    }
+    function flush_block() {
+        if (cur_start == "") return
+        count++
+        starts[count] = cur_start
+        ends[count] = cur_end
+        texts[count] = cur_text
+        cur_start = ""; cur_end = ""; cur_text = ""
+    }
+    function write_srt() {
+        for (i = 1; i <= count; i++)
+            printf "%d\n%s --> %s\n%s\n\n", i, starts[i], ends[i], texts[i] > outfile
+    }
+    function write_vtt() {
+        printf "WEBVTT\n\n" > outfile
+        for (i = 1; i <= count; i++)
+            printf "%d\n%s --> %s\n%s\n\n", i, srt_ts_to_vtt(starts[i]), srt_ts_to_vtt(ends[i]), texts[i] > outfile
+    }
+    function write_ass() {
+        printf "[Script Info]\nTitle: Converted by subtool\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n" > outfile
+        printf "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n" > outfile
+        printf "Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,10,10,40,1\n\n" > outfile
+        printf "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n" > outfile
+        for (i = 1; i <= count; i++) {
+            t = texts[i]; gsub(/\n/, "\\N", t)
+            printf "Dialogue: 0,%s,%s,Default,,0,0,0,,%s\n", srt_ts_to_ass(starts[i]), srt_ts_to_ass(ends[i]), t > outfile
+        }
+    }
+    BEGIN { count = 0; state = "init"; cur_start = ""; cur_end = ""; cur_text = "" }
 
-src_ext = '${src_ext}'.lower()
-target = '${CONVERT_FORMAT}'.lower()
-input_file = '$FILE_PATH'
-output_file = '$output'
+    # Skip VTT header
+    src == "vtt" && /^WEBVTT/ { next }
 
-with open(input_file, 'r', encoding='utf-8', errors='replace') as f:
-    content = f.read()
+    # ASS parsing
+    src == "ass" || src == "ssa" {
+        if (/^Dialogue:/) {
+            line = $0
+            sub(/^Dialogue: *[0-9]+,/, "", line)
+            # Extract start,end and text (field 9+)
+            n = split(line, flds, ",")
+            s = flds[1]; e = flds[2]
+            # Text is everything from field 9 onwards (fields: Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text...)
+            txt = ""
+            for (j = 9; j <= n; j++) {
+                if (j > 9) txt = txt ","
+                txt = txt flds[j]
+            }
+            # Remove ASS override tags
+            gsub(/\{[^}]*\}/, "", txt)
+            # Convert \N to newline
+            gsub(/\\N/, "\n", txt)
+            # Remove leading/trailing whitespace
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", txt)
+            count++
+            starts[count] = ass_ts_to_srt(s)
+            ends[count] = ass_ts_to_srt(e)
+            texts[count] = txt
+        }
+        next
+    }
 
-def parse_srt(text):
-    blocks = []
-    pattern = re.compile(
-        r'(\d+)\s*\n(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*\n((?:(?!\d+\s*\n\d{2}:\d{2}).+\n?)*)',
-        re.MULTILINE
-    )
-    for m in pattern.finditer(text):
-        blocks.append({
-            'index': int(m.group(1)),
-            'start': m.group(2).replace('.', ','),
-            'end': m.group(3).replace('.', ','),
-            'text': m.group(4).strip()
-        })
-    return blocks
-
-def parse_vtt(text):
-    text = re.sub(r'^WEBVTT.*?\n\n', '', text, flags=re.DOTALL)
-    return parse_srt(text)
-
-blocks = []
-if src_ext in ('srt',):
-    blocks = parse_srt(content)
-elif src_ext in ('vtt',):
-    blocks = parse_vtt(content)
-elif src_ext in ('ass', 'ssa'):
-    pattern = re.compile(r'Dialogue:\s*\d+,(\d+:\d{2}:\d{2}\.\d{2}),(\d+:\d{2}:\d{2}\.\d{2}),[^,]*,[^,]*,\d+,\d+,\d+,[^,]*,(.*)')
-    def ass_to_srt_ts(ts):
-        # 0:00:01.00 -> 00:00:01,000
-        h, m, rest = ts.split(':')
-        s, cs = rest.split('.')
-        return f'{int(h):02d}:{m}:{s},{int(cs)*10:03d}'
-    for i, m in enumerate(pattern.finditer(content), 1):
-        start = ass_to_srt_ts(m.group(1))
-        end = ass_to_srt_ts(m.group(2))
-        text = re.sub(r'\{[^}]*\}', '', m.group(3)).replace(r'\N', '\n').strip()
-        blocks.append({'index': i, 'start': start, 'end': end, 'text': text})
-
-if not blocks:
-    print(f'Erreur: aucun sous-titre parse depuis {src_ext}', file=sys.stderr)
-    sys.exit(1)
-
-def ts_srt_to_vtt(ts):
-    return ts.replace(',', '.')
-
-def ts_srt_to_ass(ts):
-    h, m, rest = ts.split(':')
-    s, ms = rest.split(',')
-    return f'{int(h)}:{m}:{s}.{ms[:2]}'
-
-with open(output_file, 'w', encoding='utf-8') as f:
-    if target == 'srt':
-        for i, b in enumerate(blocks, 1):
-            f.write(f\"{i}\n{b['start']} --> {b['end']}\n{b['text']}\n\n\")
-    elif target == 'vtt':
-        f.write('WEBVTT\n\n')
-        for i, b in enumerate(blocks, 1):
-            f.write(f\"{i}\n{ts_srt_to_vtt(b['start'])} --> {ts_srt_to_vtt(b['end'])}\n{b['text']}\n\n\")
-    elif target == 'ass':
-        f.write('[Script Info]\nTitle: Converted by subtool\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n')
-        f.write('[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n')
-        f.write('Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,10,10,40,1\n\n')
-        f.write('[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n')
-        for b in blocks:
-            text = b['text'].replace('\n', r'\N')
-            f.write(f\"Dialogue: 0,{ts_srt_to_ass(b['start'])},{ts_srt_to_ass(b['end'])},Default,,0,0,0,,{text}\n\")
-
-print(f'{len(blocks)} sous-titres convertis', file=sys.stderr)
-" 2>&1
+    # SRT/VTT parsing
+    /^[0-9]+[[:space:]]*$/ && state != "text" {
+        flush_block()
+        state = "index"
+        next
+    }
+    /[0-9]{2}:[0-9]{2}:[0-9]{2}[,\.][0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2}[,\.][0-9]{3}/ {
+        split($0, ts_parts, " --> ")
+        cur_start = ts_parts[1]; cur_end = ts_parts[2]
+        gsub(/\./, ",", cur_start); gsub(/\./, ",", cur_end)
+        state = "text"
+        next
+    }
+    state == "text" && /^[[:space:]]*$/ {
+        flush_block()
+        state = "init"
+        next
+    }
+    state == "text" {
+        if (cur_text != "") cur_text = cur_text "\n"
+        cur_text = cur_text $0
+    }
+    END {
+        flush_block()
+        if (tgt == "srt") write_srt()
+        else if (tgt == "vtt") write_vtt()
+        else if (tgt == "ass") write_ass()
+        printf "%d sous-titres convertis\n", count > "/dev/stderr"
+    }
+    ' "$FILE_PATH" 2>&1
 
     log "Fichier converti: $output"
 }
@@ -1490,36 +1507,51 @@ cmd_merge() {
     info "Principal: $(basename "$FILE_PATH")"
     info "Secondaire: $(basename "$MERGE_FILE")"
 
-    python3 -c "
-import re
+    # Parse SRT into temp files, then merge
+    local tmp_pri="$CACHE_DIR/_merge_pri.txt"
+    local tmp_sec="$CACHE_DIR/_merge_sec.txt"
+    mkdir -p "$CACHE_DIR"
 
-def parse_srt(path):
-    with open(path, 'r', encoding='utf-8', errors='replace') as f:
-        content = f.read()
-    blocks = []
-    pattern = re.compile(
-        r'(\d+)\s*\n(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})\s*\n((?:(?!\d+\s*\n\d{2}:\d{2}).+\n?)*)',
-        re.MULTILINE
-    )
-    for m in pattern.finditer(content):
-        blocks.append({
-            'start': m.group(2),
-            'end': m.group(3),
-            'text': m.group(4).strip()
-        })
-    return blocks
+    # Parse SRT: output "START|END|TEXT" per block (text newlines as \n literal)
+    _parse_srt_blocks() {
+        awk '
+        BEGIN { state = "init"; start = ""; end_ts = ""; txt = "" }
+        function flush() {
+            if (start == "" || txt == "") { start = ""; end_ts = ""; txt = ""; return }
+            printf "%s|%s|%s\n", start, end_ts, txt
+            start = ""; end_ts = ""; txt = ""
+        }
+        /^[0-9]+[[:space:]]*$/ && state != "text" { flush(); state = "index"; next }
+        /[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}/ {
+            split($0, p, " --> "); start = p[1]; end_ts = p[2]; state = "text"; next
+        }
+        state == "text" && /^[[:space:]]*$/ { flush(); state = "init"; next }
+        state == "text" {
+            if (txt != "") txt = txt "\\n"
+            txt = txt $0
+        }
+        END { flush() }
+        ' "$1"
+    }
 
-primary = parse_srt('$FILE_PATH')
-secondary = parse_srt('$MERGE_FILE')
+    _parse_srt_blocks "$FILE_PATH" > "$tmp_pri"
+    _parse_srt_blocks "$MERGE_FILE" > "$tmp_sec"
 
-# Match par index (meme nombre de blocs)
-with open('$output', 'w', encoding='utf-8') as f:
-    for i, p in enumerate(primary):
-        s_text = secondary[i]['text'] if i < len(secondary) else ''
-        f.write(f\"{i+1}\n{p['start']} --> {p['end']}\n{p['text']}\n<i>{s_text}</i>\n\n\")
+    # Merge the two files
+    local idx=0
+    > "$output"
+    while IFS='|' read -r start end_ts text; do
+        ((idx++)) || true
+        local sec_text=""
+        sec_text=$(sed -n "${idx}p" "$tmp_sec" 2>/dev/null | cut -d'|' -f3-)
+        # Convert \n back to real newlines
+        text=$(echo -e "$text")
+        sec_text=$(echo -e "$sec_text")
+        printf '%d\n%s --> %s\n%s\n<i>%s</i>\n\n' "$idx" "$start" "$end_ts" "$text" "$sec_text" >> "$output"
+    done < "$tmp_pri"
 
-print(f'{len(primary)} sous-titres fusionnes')
-" 2>&1
+    echo "$idx sous-titres fusionnes" >&2
+    rm -f "$tmp_pri" "$tmp_sec"
 
     log "Fichier bilingue: $output"
 }
@@ -1536,72 +1568,84 @@ cmd_fix() {
 
     header "Reparation: $(basename "$FILE_PATH")"
 
-    python3 -c "
-import re, sys
+    # Detect encoding
+    local encoding
+    encoding=$(file --mime-encoding "$FILE_PATH" 2>/dev/null | awk -F': ' '{print $2}')
+    if [[ "$encoding" != "utf-8" && "$encoding" != "us-ascii" ]]; then
+        echo "  Encodage detecte: ${encoding} -> UTF-8" >&2
+    fi
 
-with open('$FILE_PATH', 'rb') as f:
-    raw = f.read()
+    # Convert to UTF-8, normalize line endings, parse and fix
+    iconv -f "${encoding:-utf-8}" -t utf-8 "$FILE_PATH" 2>/dev/null | tr -d '\r' | \
+    awk '
+    function ts2ms(ts,    a, b) {
+        gsub(/\./, ",", ts)
+        split(ts, a, ":")
+        split(a[3], b, ",")
+        return a[1]*3600000 + a[2]*60000 + b[1]*1000 + b[2]
+    }
+    function ms2ts(ms,    h, m, s) {
+        if (ms < 0) ms = 0
+        h = int(ms / 3600000); ms = ms % 3600000
+        m = int(ms / 60000); ms = ms % 60000
+        s = int(ms / 1000); ms = ms % 1000
+        return sprintf("%02d:%02d:%02d,%03d", h, m, s, ms)
+    }
+    function flush() {
+        if (cur_start == "" || cur_text == "") { cur_start = ""; cur_end = ""; cur_text = ""; return }
+        count++
+        starts[count] = cur_start
+        ends[count] = cur_end
+        texts[count] = cur_text
+        cur_start = ""; cur_end = ""; cur_text = ""
+    }
+    BEGIN { count = 0; state = "init"; cur_start = ""; cur_end = ""; cur_text = "" }
 
-# Detection et conversion encodage -> UTF-8
-for enc in ('utf-8-sig', 'utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'cp1250'):
-    try:
-        content = raw.decode(enc)
-        if enc != 'utf-8':
-            print(f'  Encodage detecte: {enc} -> UTF-8', file=sys.stderr)
-        break
-    except (UnicodeDecodeError, UnicodeError):
-        continue
-else:
-    content = raw.decode('utf-8', errors='replace')
-    print('  Encodage: force UTF-8 avec remplacement', file=sys.stderr)
+    /^[0-9]+[[:space:]]*$/ && state != "text" {
+        flush()
+        state = "index"
+        next
+    }
+    /[0-9]{2}:[0-9]{2}:[0-9]{2}[,\.][0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2}[,\.][0-9]{3}/ {
+        split($0, ts_parts, " --> ")
+        s = ts_parts[1]; e = ts_parts[2]
+        gsub(/\./, ",", s); gsub(/\./, ",", e)
+        cur_start = s; cur_end = e
+        state = "text"
+        next
+    }
+    state == "text" && /^[[:space:]]*$/ {
+        flush()
+        state = "init"
+        next
+    }
+    state == "text" {
+        if (cur_text != "") cur_text = cur_text "\n"
+        cur_text = cur_text $0
+    }
+    END {
+        flush()
 
-# Normaliser les fins de ligne
-content = content.replace('\r\n', '\n').replace('\r', '\n')
+        # Fix overlaps
+        fixes = 0
+        for (i = 1; i < count; i++) {
+            end_ms = ts2ms(ends[i])
+            next_start_ms = ts2ms(starts[i+1])
+            if (end_ms > next_start_ms) {
+                ends[i] = ms2ts(next_start_ms - 1)
+                fixes++
+            }
+        }
+        if (fixes > 0)
+            printf "  Chevauchements corriges: %d\n", fixes > "/dev/stderr"
 
-# Parser les blocs
-pattern = re.compile(
-    r'(\d+)\s*\n(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*\n((?:(?!\d+\s*\n\d{2}:\d{2}).+\n?)*)',
-    re.MULTILINE
-)
+        # Write output with proper numbering
+        for (i = 1; i <= count; i++)
+            printf "%d\n%s --> %s\n%s\n\n", i, starts[i], ends[i], texts[i]
 
-blocks = []
-for m in pattern.finditer(content):
-    start = m.group(2).replace('.', ',')
-    end = m.group(3).replace('.', ',')
-    text = m.group(4).strip()
-    if text:
-        blocks.append({'start': start, 'end': end, 'text': text})
-
-# Corriger les chevauchements de timing
-fixes = 0
-for i in range(len(blocks) - 1):
-    def ts_to_ms(ts):
-        h, m, rest = ts.split(':')
-        s, ms = rest.split(',')
-        return int(h)*3600000 + int(m)*60000 + int(s)*1000 + int(ms)
-    def ms_to_ts(ms):
-        if ms < 0: ms = 0
-        h = ms // 3600000; ms %= 3600000
-        m = ms // 60000; ms %= 60000
-        s = ms // 1000; ms %= 1000
-        return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
-
-    end_ms = ts_to_ms(blocks[i]['end'])
-    next_start_ms = ts_to_ms(blocks[i+1]['start'])
-    if end_ms > next_start_ms:
-        blocks[i]['end'] = ms_to_ts(next_start_ms - 1)
-        fixes += 1
-
-if fixes:
-    print(f'  Chevauchements corriges: {fixes}', file=sys.stderr)
-
-# Reecrire avec numerotation propre
-with open('$output', 'w', encoding='utf-8') as f:
-    for i, b in enumerate(blocks, 1):
-        f.write(f\"{i}\n{b['start']} --> {b['end']}\n{b['text']}\n\n\")
-
-print(f'  {len(blocks)} sous-titres, renumerotes en UTF-8', file=sys.stderr)
-" 2>&1
+        printf "  %d sous-titres, renumerotes en UTF-8\n", count > "/dev/stderr"
+    }
+    ' > "$output"
 
     log "Fichier repare: $output"
 }

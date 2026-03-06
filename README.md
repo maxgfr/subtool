@@ -33,8 +33,7 @@ sudo mv subtool /usr/local/bin/
 ### Dependencies
 
 - `jq` — JSON parsing
-- `python3` — subtitle processing
-- `ffmpeg` / `ffprobe` — extract/embed subtitles, video analysis
+- `ffmpeg` / `ffprobe` (optional) — extract/embed subtitles, video analysis
 - `ffsubsync` (optional) — auto-sync subtitles with video (`pip install ffsubsync`)
 
 ## AI Translation Providers

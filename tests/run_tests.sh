@@ -234,24 +234,22 @@ first_num=$(head -1 "$out_file")
 assert_exit_code "fix: premier bloc = 1" "1" "$first_num"
 
 # Verifier que les chevauchements sont corriges
-overlap_check=$(python3 -c "
-import re
-with open('$out_file') as f:
-    content = f.read()
-times = re.findall(r'(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})', content)
-def to_ms(ts):
-    h,m,rest = ts.split(':')
-    s,ms = rest.split(',')
-    return int(h)*3600000+int(m)*60000+int(s)*1000+int(ms)
-ok = True
-for i in range(len(times)-1):
-    end = to_ms(times[i][1])
-    next_start = to_ms(times[i+1][0])
-    if end > next_start:
-        ok = False
-        break
-print('0' if ok else '1')
-" 2>/dev/null)
+overlap_check=$(awk '
+function ts2ms(ts,    a, b) {
+    split(ts, a, ":"); split(a[3], b, ",")
+    return a[1]*3600000 + a[2]*60000 + b[1]*1000 + b[2]
+}
+/[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}/ {
+    split($0, p, " --> ")
+    end_ms = ts2ms(p[1] == "" ? p[2] : p[1])
+    start_ms = ts2ms(p[2] == "" ? p[1] : p[2])
+    # For the arrow line: p[1]=start, but we need end of THIS and start of NEXT
+    this_end = ts2ms(p[2])
+    if (prev_end > 0 && ts2ms(p[1]) < prev_end) { print 1; exit }
+    prev_end = this_end
+}
+END { print 0 }
+' "$out_file" 2>/dev/null)
 assert "fix: pas de chevauchement apres fix" "$overlap_check"
 
 # Verifier encodage UTF-8
@@ -342,7 +340,7 @@ if command -v ffmpeg &>/dev/null; then
 
     if [[ -f "$embed_out" ]]; then
         # Verifier que la video a des sous-titres
-        sub_count=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$embed_out" 2>/dev/null | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('streams',[])))" 2>/dev/null || echo 0)
+        sub_count=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$embed_out" 2>/dev/null | jq '.streams | length' 2>/dev/null || echo 0)
         if [[ "$sub_count" -gt 0 ]]; then
             assert "embed: video contient des sous-titres" 0
         else
