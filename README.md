@@ -10,6 +10,7 @@ All-in-one CLI for subtitle management: download, translate, convert, sync, clea
 - **Format conversion** between SRT, VTT, and ASS
 - **Subtitle tools**: info, clean, sync, fix, merge, extract, embed
 - **Auto-sync** with video using [ffsubsync](https://github.com/smacke/ffsubsync)
+- **Folder scan** — auto-download subtitles for all video files in a directory
 - **Batch download** for full seasons
 - **Configurable models** per provider
 
@@ -85,6 +86,13 @@ subtool get -q "Breaking Bad S05E14" -l en
 # Batch download a full season
 subtool batch -q "Dark S01" -l en
 
+# Scan a folder and auto-download subtitles for all videos
+subtool scan --dir ~/Movies/Die.Discounter -l fr
+subtool scan --dir ~/Movies/Die.Discounter -l fr --dry-run          # preview only
+subtool scan --dir ~/Movies/Die.Discounter -l fr -q "Die Discounter" # override title
+subtool scan --dir ~/Movies/Die.Discounter -l fr -i tt16463942      # use IMDb ID
+subtool scan --dir ~/Movies/Die.Discounter -l fr --force-translate   # fallback + AI translate
+
 # Search without downloading
 subtool search -q "Parasite" -l en
 
@@ -134,6 +142,7 @@ subtool check
 |---|---|
 | `--auto` | Auto-select first result (no interactive prompt) |
 | `--dry-run` | Show results without downloading |
+| `--dir <path>` | Directory to scan for video files (used with `scan`) |
 | `--json` | Output results as JSON (implies `--quiet`) |
 | `--verbose` | Show debug output |
 | `--quiet` | Suppress informational messages |
@@ -189,6 +198,50 @@ subtool auto-detects the type of query:
 | `Inception 2010` | Film | Year 2010 |
 | `tt16463942 S01E01` | Episode | IMDb ID + S01E01 |
 | `Parasite` | Film | Title search |
+
+## Folder Scan
+
+The `scan` command recursively finds video files in a directory and auto-downloads subtitles for each one, placing `.srt` files next to the videos.
+
+```
+~/Movies/Die.Discounter/
+├── S1/
+│   ├── Die Discounter S01E01-Der Anfang vom Ende [x8kvivs].mp4
+│   ├── Die Discounter S01E01-Der Anfang vom Ende [x8kvivs].fr.srt  ← downloaded
+│   ├── Die Discounter S01E02-Große Frauen [...].mp4
+│   └── Die Discounter S01E02-Große Frauen [...].fr.srt             ← downloaded
+├── S2/
+│   └── ...
+```
+
+**How it works:**
+
+1. Finds all video files (`.mp4`, `.mkv`, `.avi`, etc.) recursively
+2. Parses each filename to extract title, season, and episode (`S01E03`, `1x05`, dots/spaces)
+3. Searches all configured sources for matching subtitles
+4. Saves the `.srt` next to the video with the same base name
+5. Skips videos that already have a subtitle file
+
+**Options:**
+
+| Flag | Description |
+|---|---|
+| `--dir <path>` | Directory to scan (required) |
+| `-l / --lang <code>` | Target language (required) |
+| `-q / --query <title>` | Override the parsed title for all files |
+| `-i / --imdb <id>` | Use an IMDb ID for more accurate results |
+| `--force-translate` | If not found in target language, try fallback languages + AI translation |
+| `--dry-run` | Preview what would be downloaded without actually downloading |
+| `--sources` | Choose subtitle sources (default: `opensubtitles,podnapisi,subdl`) |
+| `--fallback-langs` | Languages to try for fallback translation (default: `en,de,es,pt`) |
+
+**Tips:**
+
+- Use `--dry-run` first to verify filename parsing is correct
+- Pass `-q "Show Name"` when filenames are messy or inconsistent
+- Pass `-i tt1234567` for the best search accuracy (especially for non-English titles)
+- Combine `--force-translate -p openai` to translate from any available language using AI
+- Re-run the same command safely — already downloaded subtitles are skipped
 
 ## License
 

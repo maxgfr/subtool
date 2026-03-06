@@ -1418,6 +1418,136 @@ cmd_batch() {
     log "Dossier: $season_dir"
 }
 
+# ── Commande: scan (auto-download depuis un dossier de videos) ───────────────
+cmd_scan() {
+    [[ -z "$SCAN_DIR" ]] && die "Specifie --dir <dossier_videos>"
+    [[ ! -d "$SCAN_DIR" ]] && die "Dossier introuvable: $SCAN_DIR"
+    [[ -z "$LANG_TARGET" ]] && die "Specifie --lang (ex: fr, en, de)"
+
+    local title_override="${SEARCH_QUERY:-}"
+    local imdb_override="${IMDB_ID:-}"
+
+    header "subtool scan"
+    info "Dossier: $SCAN_DIR"
+    info "Langue: $LANG_TARGET"
+    [[ -n "$title_override" ]] && info "Titre force: $title_override"
+    [[ -n "$imdb_override" ]] && info "IMDb force: $imdb_override"
+    $DRY_RUN && info "Mode: dry-run (aucun telechargement)"
+    $FORCE_TRANSLATE && info "Fallback traduction: actif ($FALLBACK_LANGS)"
+
+    opensubtitles_login 2>/dev/null || true
+
+    local success=0 fail=0 skip=0 translated=0 total=0
+
+    while IFS= read -r -d '' video_file; do
+        ((total++)) || true
+        local dir_name base_name name_no_ext
+        dir_name=$(dirname "$video_file")
+        base_name=$(basename "$video_file")
+        name_no_ext="${base_name%.*}"
+
+        # Check if subtitle already exists next to the video
+        local srt_path="${dir_name}/${name_no_ext}.${LANG_TARGET}.srt"
+        if [[ -f "$srt_path" ]] || [[ -f "${dir_name}/${name_no_ext}.srt" ]]; then
+            info "Skip (existe deja): $base_name"
+            ((skip++)) || true
+            continue
+        fi
+
+        printf "\n${BOLD}── %s ──${NC}\n" "$base_name" >&2
+
+        # Clean filename for parsing: strip bracket codes, resolution tags, and episode descriptions
+        local clean_name="$name_no_ext"
+        clean_name=$(echo "$clean_name" | sed -E 's/\[[^]]*\]//g')                        # remove [xxx]
+        clean_name=$(echo "$clean_name" | sed -E 's/\([^)]*\)//g')                        # remove (xxx)
+        clean_name=$(echo "$clean_name" | sed -E 's/([Ss][0-9]+[Ee][0-9]+)[-. ].*/\1/')   # keep only up to SxxExx
+        clean_name=$(echo "$clean_name" | tr '.' ' ')                                      # dots to spaces
+
+        # Parse filename to extract season/episode
+        parse_smart_query "$clean_name"
+
+        # Override title/imdb if user provided --query or --imdb
+        [[ -n "$title_override" ]] && PARSED_TITLE="$title_override"
+        [[ -n "$imdb_override" ]] && PARSED_IMDB="$imdb_override"
+
+        if [[ -z "$PARSED_TITLE" && -z "$PARSED_IMDB" ]]; then
+            warn "Impossible de parser: $base_name"
+            ((fail++)) || true
+            continue
+        fi
+
+        debug "Parsed: title='$PARSED_TITLE' S=$PARSED_SEASON E=$PARSED_EPISODE mode=$PARSED_MODE"
+
+        # Dry-run: just show what would be done
+        if $DRY_RUN; then
+            info "[dry-run] $PARSED_TITLE S$(printf '%02d' "${PARSED_SEASON:-0}")E$(printf '%02d' "${PARSED_EPISODE:-0}") -> $srt_path"
+            continue
+        fi
+
+        local results=""
+        local found=false
+
+        # Try to find subtitles in target language
+        if results=$(search_all_sources "$PARSED_TITLE" "$LANG_TARGET" "$PARSED_IMDB" "$PARSED_SEASON" "$PARSED_EPISODE" 2>/dev/null); then
+            local first
+            first=$(echo "$results" | head -1)
+            if [[ -n "$first" ]]; then
+                if download_subtitle "$first" "$srt_path" 2>/dev/null; then
+                    log "OK: $srt_path"
+                    ((success++)) || true
+                    found=true
+                else
+                    warn "Echec telechargement: $base_name"
+                fi
+            fi
+        fi
+
+        # Fallback: try other languages + translate
+        if ! $found && $FORCE_TRANSLATE; then
+            local fallback_found=false fallback_lang="" fallback_results=""
+            IFS=',' read -ra fb_langs <<< "$FALLBACK_LANGS"
+            for fl in "${fb_langs[@]}"; do
+                fl=$(echo "$fl" | tr -d ' ')
+                [[ "$fl" == "$LANG_TARGET" ]] && continue
+                if fallback_results=$(search_all_sources "$PARSED_TITLE" "$fl" "$PARSED_IMDB" "$PARSED_SEASON" "$PARSED_EPISODE" 2>/dev/null); then
+                    fallback_lang="$fl"
+                    fallback_found=true
+                    break
+                fi
+            done
+
+            if $fallback_found; then
+                local first
+                first=$(echo "$fallback_results" | head -1)
+                local tmp_src="${CACHE_DIR}/scan_tmp.${fallback_lang}.srt"
+                if download_subtitle "$first" "$tmp_src" 2>/dev/null; then
+                    if translate_subtitle "$tmp_src" "$srt_path" "$fallback_lang" "$LANG_TARGET" "$AI_PROVIDER" 2>/dev/null; then
+                        log "Traduit ($fallback_lang->$LANG_TARGET): $srt_path"
+                        ((translated++)) || true
+                        found=true
+                    else
+                        warn "Echec traduction: $base_name"
+                    fi
+                    rm -f "$tmp_src"
+                fi
+            fi
+        fi
+
+        if ! $found; then
+            ((fail++)) || true
+        fi
+
+    done < <(find "$SCAN_DIR" -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" -o -iname "*.webm" -o -iname "*.m4v" -o -iname "*.mpg" -o -iname "*.mpeg" -o -iname "*.ts" \) -print0 2>/dev/null | sort -z)
+
+    printf "\n"
+    header "Resultat scan"
+    if $DRY_RUN; then
+        log "Total: $total | Skips: $skip | A traiter: $((total - skip))"
+    else
+        log "Total: $total | Telecharges: $success | Traduits: $translated | Skips: $skip | Echecs: $fail"
+    fi
+}
+
 # ── Commande: translate ──────────────────────────────────────────────────────
 cmd_translate() {
     [[ -z "$FILE_PATH" ]] && die "Specifie --file <fichier.srt>"
@@ -2050,6 +2180,7 @@ cmd_autosync() {
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 SRC_LANG=""
+SCAN_DIR=""
 COMMAND=""
 EMBED_SUB=""
 CONFIG_SUBCMD=""
@@ -2059,7 +2190,7 @@ CONFIG_VALUE=""
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            get|search|translate|batch|info|clean|sync|autosync|convert|merge|fix|extract|embed|providers|sources|check)
+            get|search|translate|batch|scan|info|clean|sync|autosync|convert|merge|fix|extract|embed|providers|sources|check)
                 COMMAND="$1"; shift ;;
             config)
                 COMMAND="config"; shift
@@ -2095,6 +2226,7 @@ parse_args() {
             --json)        JSON_OUTPUT=true; QUIET=true; shift ;;
             --verbose)     VERBOSE=true; shift ;;
             --quiet)       QUIET=true; shift ;;
+            --dir)         SCAN_DIR="$2"; shift 2 ;;
             -h|--help)     usage; exit 0 ;;
             -v|--version)  echo "$VERSION"; exit 0 ;;
             *)             die "Option inconnue: $1. Utilise --help" ;;
@@ -2123,6 +2255,7 @@ main() {
         search)    cmd_search ;;
         translate) cmd_translate ;;
         batch)     cmd_batch ;;
+        scan)      cmd_scan ;;
         info)      cmd_info ;;
         clean)     cmd_clean ;;
         sync)      cmd_sync ;;

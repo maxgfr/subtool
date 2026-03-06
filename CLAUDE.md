@@ -30,7 +30,7 @@ Translation uses chunking for large files (`chunk_srt()`, 250 lines per chunk).
 `parse_smart_query()` extracts title, season, episode, range, year, IMDB ID from free-text input like "Die Discounter S01E03-E08".
 
 ## Commands
-`get`, `search`, `batch`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `fix`, `extract`, `embed`, `config`, `check`, `providers`, `sources`
+`get`, `search`, `batch`, `scan`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `fix`, `extract`, `embed`, `config`, `check`, `providers`, `sources`
 
 ## CLI Flags
 - `--auto` — auto-select first result (skip interactive prompt)
