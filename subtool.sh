@@ -45,27 +45,6 @@ die() { err "$1"; exit 1; }
 # URL encode (pure bash via jq)
 urlencode() { jq -sRr @uri <<< "$1" | sed 's/%0A$//'; }
 
-# JSON escape file content for API calls (via jq)
-json_escape_file() { jq -sR . < "$1"; }
-
-# Timestamp SRT -> millisecondes
-ts_to_ms() {
-    local ts="$1"
-    local h="${ts%%:*}"; ts="${ts#*:}"
-    local m="${ts%%:*}"; ts="${ts#*:}"
-    local s="${ts%%[,.]*}"; local ms="${ts##*[,.]}"
-    echo $(( 10#$h * 3600000 + 10#$m * 60000 + 10#$s * 1000 + 10#$ms ))
-}
-
-# Millisecondes -> Timestamp SRT
-ms_to_ts() {
-    local ms=$1
-    [[ $ms -lt 0 ]] && ms=0
-    local h=$((ms / 3600000)); ms=$((ms % 3600000))
-    local m=$((ms / 60000)); ms=$((ms % 60000))
-    local s=$((ms / 1000)); ms=$((ms % 1000))
-    printf '%02d:%02d:%02d,%03d' "$h" "$m" "$s" "$ms"
-}
 
 # ── Config ────────────────────────────────────────────────────────────────────
 init_config() {
@@ -121,6 +100,12 @@ load_config() {
     [[ -n "$_saved_mistral" ]] && MISTRAL_API_KEY="$_saved_mistral"
     [[ -n "$_saved_gemini" ]] && GEMINI_API_KEY="$_saved_gemini"
     [[ -n "$_saved_zai" ]] && ZAI_API_KEY="$_saved_zai"
+    # Restaurer les modeles par defaut si le config les a mis a vide
+    [[ -z "$MODEL_ZAI_CODEPLAN" ]] && MODEL_ZAI_CODEPLAN="glm-4.7"
+    [[ -z "$MODEL_OPENAI" ]] && MODEL_OPENAI="gpt-4o"
+    [[ -z "$MODEL_CLAUDE" ]] && MODEL_CLAUDE="claude-sonnet-4-20250514"
+    [[ -z "$MODEL_MISTRAL" ]] && MODEL_MISTRAL="mistral-large-latest"
+    [[ -z "$MODEL_GEMINI" ]] && MODEL_GEMINI="gemini-2.0-flash"
     AI_PROVIDER="${DEFAULT_AI_PROVIDER:-claude-code}"
 }
 
@@ -460,10 +445,10 @@ translate_with_openai() {
     local model="${AI_MODEL:-$MODEL_OPENAI}"
     info "Traduction avec OpenAI ($model)..."
 
-    local escaped_content
-    escaped_content=$(jq -sR . < "$input")
-
     local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
+
+    local escaped_content
+    escaped_content=$(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)
 
     local resp
     resp=$(curl -sf "https://api.openai.com/v1/chat/completions" \
@@ -473,7 +458,7 @@ translate_with_openai() {
             \"model\": \"$model\",
             \"messages\": [
                 {\"role\": \"system\", \"content\": \"You are a professional subtitle translator. Preserve all SRT formatting exactly.\"},
-                {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
+                {\"role\": \"user\", \"content\": $escaped_content}
             ],
             \"temperature\": 0.3
         }" 2>/dev/null) || { err "Erreur API OpenAI"; return 1; }
@@ -1790,7 +1775,6 @@ cmd_autosync() {
     case "$ref_ext" in
         srt|ass|ssa|vtt|sub)
             info "Mode: subtitle <-> subtitle"
-            ffsubsync_args+=(--reference-stream "")
             ;;
         *)
             info "Mode: video <-> subtitle (extraction audio)"

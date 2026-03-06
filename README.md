@@ -18,8 +18,8 @@ All-in-one CLI for subtitle management: download, translate, convert, sync, clea
 ### Homebrew
 
 ```bash
-brew tap maxgfr/homebrew-tap
-brew install subtool
+brew install maxgfr/tap/subtool
+subtool --help
 ```
 
 ### Manual
