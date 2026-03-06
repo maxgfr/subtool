@@ -12,7 +12,7 @@ BOLD='\033[1m'; NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-SUBSYNC="$PROJECT_DIR/subtool"
+SUBSYNC="$PROJECT_DIR/subtool.sh"
 FIXTURES="$SCRIPT_DIR/fixtures"
 TMP_DIR=$(mktemp -d)
 
@@ -97,7 +97,7 @@ assert_output_contains "--help contient translate" "$out" "translate"
 
 out=$("$SUBSYNC" providers 2>&1)
 assert_output_contains "providers liste claude-code" "$out" "claude-code"
-assert_output_contains "providers liste zai" "$out" "zai"
+assert_output_contains "providers liste zai-codeplan" "$out" "zai-codeplan"
 assert_output_contains "providers liste openai" "$out" "openai"
 assert_output_contains "providers liste gemini" "$out" "gemini"
 
@@ -357,28 +357,28 @@ fi
 section "translate (API - optionnel)"
 
 if [[ -n "${ZAI_API_KEY:-}" ]]; then
-    "$SUBSYNC" translate -f "$FIXTURES/basic.srt" -l fr --from de -p zai -o "$TMP_DIR" 2>&1
+    "$SUBSYNC" translate -f "$FIXTURES/basic.srt" -l fr --from de -p zai-codeplan -o "$TMP_DIR" 2>&1
     out_file="$TMP_DIR/basic.fr.srt"
-    assert_file_exists "translate zai: fichier cree" "$out_file"
-    assert_file_contains "translate zai: contient timestamps" "$out_file" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
+    assert_file_exists "translate zai-codeplan: fichier cree" "$out_file"
+    assert_file_contains "translate zai-codeplan: contient timestamps" "$out_file" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
     # Verifier que c'est bien du francais
     sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$out_file" | head -5 | tr '\n' ' ')
     if echo "$sample" | grep -qiE '\b(le|la|les|des|est|une|que|pas|avec|dans|chez|ici)\b'; then
-        assert "translate zai: resultat en francais" 0
+        assert "translate zai-codeplan: resultat en francais" 0
     else
-        assert "translate zai: resultat en francais" 1
+        assert "translate zai-codeplan: resultat en francais" 1
     fi
 
     # Verifier que le nombre de blocs est conserve
     src_blocks=$(grep -cE '^[0-9]+$' "$FIXTURES/basic.srt" || true)
     dst_blocks=$(grep -cE '^[0-9]+$' "$out_file" || true)
     if [[ "$src_blocks" -eq "$dst_blocks" ]]; then
-        assert "translate zai: meme nombre de blocs ($src_blocks)" 0
+        assert "translate zai-codeplan: meme nombre de blocs ($src_blocks)" 0
     else
-        assert "translate zai: meme nombre de blocs (src=$src_blocks dst=$dst_blocks)" 1
+        assert "translate zai-codeplan: meme nombre de blocs (src=$src_blocks dst=$dst_blocks)" 1
     fi
 else
-    printf "  ${YELLOW}SKIP${NC}  translate zai: ZAI_API_KEY non definie\n"
+    printf "  ${YELLOW}SKIP${NC}  translate zai-codeplan: ZAI_API_KEY non definie\n"
 fi
 
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then

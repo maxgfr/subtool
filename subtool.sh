@@ -24,6 +24,14 @@ FORCE_TRANSLATE=false
 SOURCES="opensubtitles,podnapisi,subdl"
 FALLBACK_LANGS="en,de,es,pt"
 MAX_EPISODE=20
+AI_MODEL=""
+
+# ── Modeles par defaut ────────────────────────────────────────────────────────
+MODEL_ZAI_CODEPLAN="glm-4.7"
+MODEL_OPENAI="gpt-4o"
+MODEL_CLAUDE="claude-sonnet-4-20250514"
+MODEL_MISTRAL="mistral-large-latest"
+MODEL_GEMINI="gemini-2.0-flash"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 log()   { printf "${GREEN}[+]${NC} %s\n" "$*"; }
@@ -53,8 +61,15 @@ MISTRAL_API_KEY=""
 GEMINI_API_KEY=""
 ZAI_API_KEY=""
 
-# Provider AI par defaut: claude-code, claude, openai, mistral, gemini, zai
+# Provider AI par defaut: claude-code, zai-codeplan, openai, claude, mistral, gemini
 DEFAULT_AI_PROVIDER="claude-code"
+
+# Modeles par defaut (laisser vide pour utiliser les valeurs par defaut)
+MODEL_ZAI_CODEPLAN=""
+MODEL_OPENAI=""
+MODEL_CLAUDE=""
+MODEL_MISTRAL=""
+MODEL_GEMINI=""
 CONF
         info "Config creee: $CONFIG_FILE"
         info "Edite-la pour ajouter tes cles API"
@@ -63,8 +78,24 @@ CONF
 
 load_config() {
     init_config
+    # Sauvegarder les vars d'env existantes avant source
+    local _saved_opensubtitles="${OPENSUBTITLES_API_KEY:-}"
+    local _saved_subdl="${SUBDL_API_KEY:-}"
+    local _saved_openai="${OPENAI_API_KEY:-}"
+    local _saved_anthropic="${ANTHROPIC_API_KEY:-}"
+    local _saved_mistral="${MISTRAL_API_KEY:-}"
+    local _saved_gemini="${GEMINI_API_KEY:-}"
+    local _saved_zai="${ZAI_API_KEY:-}"
     # shellcheck source=/dev/null
     [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+    # Les vars d'env ont priorite sur le fichier config
+    [[ -n "$_saved_opensubtitles" ]] && OPENSUBTITLES_API_KEY="$_saved_opensubtitles"
+    [[ -n "$_saved_subdl" ]] && SUBDL_API_KEY="$_saved_subdl"
+    [[ -n "$_saved_openai" ]] && OPENAI_API_KEY="$_saved_openai"
+    [[ -n "$_saved_anthropic" ]] && ANTHROPIC_API_KEY="$_saved_anthropic"
+    [[ -n "$_saved_mistral" ]] && MISTRAL_API_KEY="$_saved_mistral"
+    [[ -n "$_saved_gemini" ]] && GEMINI_API_KEY="$_saved_gemini"
+    [[ -n "$_saved_zai" ]] && ZAI_API_KEY="$_saved_zai"
     AI_PROVIDER="${DEFAULT_AI_PROVIDER:-claude-code}"
 }
 
@@ -374,10 +405,11 @@ translate_with_claude_code() {
 $content" > "$output" 2>/dev/null
 }
 
-translate_with_zai() {
+translate_with_zai_codeplan() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4"
     [[ -z "${ZAI_API_KEY:-}" ]] && { err "ZAI_API_KEY non configuree"; return 1; }
-    info "Traduction avec Z.ai GLM-4.7 (Coding Plan)..."
+    local model="${AI_MODEL:-$MODEL_ZAI_CODEPLAN}"
+    info "Traduction avec Z.ai Coding Plan ($model)..."
 
     local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
 
@@ -386,7 +418,7 @@ translate_with_zai() {
         -H "Authorization: Bearer $ZAI_API_KEY" \
         -H "Content-Type: application/json" \
         -d "{
-            \"model\": \"glm-4.7\",
+            \"model\": \"$model\",
             \"messages\": [
                 {\"role\": \"system\", \"content\": \"You are a professional subtitle translator. Preserve all SRT formatting exactly.\"},
                 {\"role\": \"user\", \"content\": $(python3 -c "import json; print(json.dumps('$prompt\n\n' + open('$input').read()))")}
@@ -400,7 +432,8 @@ translate_with_zai() {
 translate_with_openai() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4"
     [[ -z "${OPENAI_API_KEY:-}" ]] && { err "OPENAI_API_KEY non configuree"; return 1; }
-    info "Traduction avec OpenAI GPT-4o..."
+    local model="${AI_MODEL:-$MODEL_OPENAI}"
+    info "Traduction avec OpenAI ($model)..."
 
     local content
     content=$(<"$input")
@@ -414,7 +447,7 @@ translate_with_openai() {
         -H "Authorization: Bearer $OPENAI_API_KEY" \
         -H "Content-Type: application/json" \
         -d "{
-            \"model\": \"gpt-4o\",
+            \"model\": \"$model\",
             \"messages\": [
                 {\"role\": \"system\", \"content\": \"You are a professional subtitle translator. Preserve all SRT formatting exactly.\"},
                 {\"role\": \"user\", \"content\": $(python3 -c "import json; print(json.dumps('$prompt\n\n' + open('$input').read()))")}
@@ -428,7 +461,8 @@ translate_with_openai() {
 translate_with_claude() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4"
     [[ -z "${ANTHROPIC_API_KEY:-}" ]] && { err "ANTHROPIC_API_KEY non configuree"; return 1; }
-    info "Traduction avec Claude API..."
+    local model="${AI_MODEL:-$MODEL_CLAUDE}"
+    info "Traduction avec Claude API ($model)..."
 
     local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
 
@@ -438,7 +472,7 @@ translate_with_claude() {
         -H "anthropic-version: 2023-06-01" \
         -H "Content-Type: application/json" \
         -d "{
-            \"model\": \"claude-sonnet-4-20250514\",
+            \"model\": \"$model\",
             \"max_tokens\": 8192,
             \"messages\": [
                 {\"role\": \"user\", \"content\": $(python3 -c "import json; print(json.dumps('$prompt\n\n' + open('$input').read()))")}
@@ -451,7 +485,8 @@ translate_with_claude() {
 translate_with_mistral() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4"
     [[ -z "${MISTRAL_API_KEY:-}" ]] && { err "MISTRAL_API_KEY non configuree"; return 1; }
-    info "Traduction avec Mistral..."
+    local model="${AI_MODEL:-$MODEL_MISTRAL}"
+    info "Traduction avec Mistral ($model)..."
 
     local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
 
@@ -460,7 +495,7 @@ translate_with_mistral() {
         -H "Authorization: Bearer $MISTRAL_API_KEY" \
         -H "Content-Type: application/json" \
         -d "{
-            \"model\": \"mistral-large-latest\",
+            \"model\": \"$model\",
             \"messages\": [
                 {\"role\": \"user\", \"content\": $(python3 -c "import json; print(json.dumps('$prompt\n\n' + open('$input').read()))")}
             ],
@@ -473,12 +508,13 @@ translate_with_mistral() {
 translate_with_gemini() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4"
     [[ -z "${GEMINI_API_KEY:-}" ]] && { err "GEMINI_API_KEY non configuree"; return 1; }
-    info "Traduction avec Gemini..."
+    local model="${AI_MODEL:-$MODEL_GEMINI}"
+    info "Traduction avec Gemini ($model)..."
 
     local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
 
     local resp
-    resp=$(curl -sf "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$GEMINI_API_KEY" \
+    resp=$(curl -sf "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
         -H "Content-Type: application/json" \
         -d "{
             \"contents\": [{
@@ -504,7 +540,7 @@ translate_subtitle() {
         # Fichier assez petit, traduction directe
         case "$provider" in
             claude-code) translate_with_claude_code "$input" "$output" "$src_lang" "$target_lang" ;;
-            zai)         translate_with_zai "$input" "$output" "$src_lang" "$target_lang" ;;
+            zai-codeplan) translate_with_zai_codeplan "$input" "$output" "$src_lang" "$target_lang" ;;
             openai)      translate_with_openai "$input" "$output" "$src_lang" "$target_lang" ;;
             claude)      translate_with_claude "$input" "$output" "$src_lang" "$target_lang" ;;
             mistral)     translate_with_mistral "$input" "$output" "$src_lang" "$target_lang" ;;
@@ -527,7 +563,7 @@ translate_subtitle() {
 
             case "$provider" in
                 claude-code) translate_with_claude_code "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
-                zai)         translate_with_zai "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
+                zai-codeplan) translate_with_zai_codeplan "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
                 openai)      translate_with_openai "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
                 claude)      translate_with_claude "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
                 mistral)     translate_with_mistral "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
@@ -594,7 +630,8 @@ ${BOLD}OPTIONS${NC}
     -e, --episode <num>       Numero d'episode (series)
     -f, --file <fichier>      Fichier SRT a traduire
     -o, --output <dir>        Dossier de sortie (defaut: .)
-    -p, --provider <provider> Provider AI (claude-code|zai|openai|claude|mistral|gemini)
+    -p, --provider <provider> Provider AI (claude-code|zai-codeplan|openai|claude|mistral|gemini)
+    -m, --model <model>       Modele AI a utiliser (override le modele par defaut du provider)
     --sources <src1,src2>     Sources (opensubtitles,podnapisi,subdl)
     --from <lang>             Langue source pour traduction
     --fallback-langs <l1,l2>  Langues de fallback (defaut: en,de,es,pt)
@@ -617,7 +654,7 @@ ${BOLD}EXEMPLES${NC}
     $SCRIPT_NAME get -q \"Die Discounter S01\" -l de
 
     # Smart get - range d'episodes
-    $SCRIPT_NAME get -q \"Die Discounter S01E03-E08\" -l fr --force-translate -p zai
+    $SCRIPT_NAME get -q \"Die Discounter S01E03-E08\" -l fr --force-translate -p zai-codeplan
 
     # Smart get - film
     $SCRIPT_NAME get -q \"Inception 2010\" -l fr
@@ -633,7 +670,7 @@ ${BOLD}EXEMPLES${NC}
     $SCRIPT_NAME get -q \"Die Discounter S01E03\" -l fr --force-translate
 
     # Traduction locale
-    $SCRIPT_NAME translate -f episode.de.srt -l fr --from de -p zai
+    $SCRIPT_NAME translate -f episode.de.srt -l fr --from de -p zai-codeplan
 
     # Outils sous-titres
     $SCRIPT_NAME info -f movie.srt
@@ -670,27 +707,27 @@ cmd_sources() {
 # ── Commande: providers ──────────────────────────────────────────────────────
 cmd_providers() {
     header "Providers AI pour traduction"
-    printf "  ${BOLD}%-15s${NC} %-10s %s\n" "Provider" "Status" "Description"
-    printf "  %-15s %-10s %s\n" "───────────────" "──────────" "──────────────────────"
+    printf "  ${BOLD}%-15s${NC} %-10s %-25s %s\n" "Provider" "Status" "Modele" "Description"
+    printf "  %-15s %-10s %-25s %s\n" "───────────────" "──────────" "─────────────────────────" "──────────────────────"
 
     local status
     if command -v claude &>/dev/null; then status="${GREEN}OK${NC}"; else status="${RED}N/A${NC}"; fi
-    printf "  ${BOLD}%-15s${NC} ${status}       %s\n" "claude-code" "Claude Code CLI (defaut, pas de cle API requise)"
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "claude-code" "(Claude Code CLI)" "Defaut, pas de cle API requise"
 
     if [[ -n "${ZAI_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
-    printf "  ${BOLD}%-15s${NC} ${status}       %s\n" "zai" "Z.ai GLM-4.7 Coding Plan API"
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "zai-codeplan" "$MODEL_ZAI_CODEPLAN" "Z.ai Coding Plan API"
 
     if [[ -n "${OPENAI_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
-    printf "  ${BOLD}%-15s${NC} ${status}       %s\n" "openai" "OpenAI GPT-4o"
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "openai" "$MODEL_OPENAI" "OpenAI API"
 
     if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
-    printf "  ${BOLD}%-15s${NC} ${status}       %s\n" "claude" "Claude API (Anthropic)"
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "claude" "$MODEL_CLAUDE" "Claude API (Anthropic)"
 
     if [[ -n "${MISTRAL_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
-    printf "  ${BOLD}%-15s${NC} ${status}       %s\n" "mistral" "Mistral Large"
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "mistral" "$MODEL_MISTRAL" "Mistral API"
 
     if [[ -n "${GEMINI_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
-    printf "  ${BOLD}%-15s${NC} ${status}       %s\n" "gemini" "Google Gemini 2.0 Flash"
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "gemini" "$MODEL_GEMINI" "Google Gemini API"
 }
 
 # ── Commande: config ──────────────────────────────────────────────────────────
@@ -1742,6 +1779,7 @@ parse_args() {
             -f|--file)     FILE_PATH="$2"; shift 2 ;;
             -o|--output)   OUTPUT_DIR="$2"; shift 2 ;;
             -p|--provider) AI_PROVIDER="$2"; shift 2 ;;
+            -m|--model)    AI_MODEL="$2"; shift 2 ;;
             --sources)     SOURCES="$2"; shift 2 ;;
             --from)        SRC_LANG="$2"; shift 2 ;;
             --fallback-langs) FALLBACK_LANGS="$2"; shift 2 ;;
