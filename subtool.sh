@@ -25,6 +25,11 @@ SOURCES="opensubtitles,podnapisi,subdl"
 FALLBACK_LANGS="en,de,es,pt"
 MAX_EPISODE=20
 AI_MODEL=""
+AUTO_SELECT=false
+DRY_RUN=false
+JSON_OUTPUT=false
+VERBOSE=false
+QUIET=false
 
 # ── Modeles par defaut ────────────────────────────────────────────────────────
 MODEL_ZAI_CODEPLAN="glm-4.7"
@@ -34,17 +39,62 @@ MODEL_MISTRAL="mistral-large-latest"
 MODEL_GEMINI="gemini-2.0-flash"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-log()   { printf "${GREEN}[+]${NC} %s\n" "$*"; }
-warn()  { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
-err()   { printf "${RED}[x]${NC} %s\n" "$*" >&2; }
-info()  { printf "${CYAN}[i]${NC} %s\n" "$*"; }
-header(){ printf "\n${BOLD}${BLUE}── %s ──${NC}\n" "$*"; }
+log()    { $QUIET && return; printf "${GREEN}[+]${NC} %s\n" "$*"; }
+warn()   { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
+err()    { printf "${RED}[x]${NC} %s\n" "$*" >&2; }
+info()   { $QUIET && return; printf "${CYAN}[i]${NC} %s\n" "$*"; }
+debug()  { $VERBOSE && printf "${BLUE}[D]${NC} %s\n" "$*" >&2; }
+header() { $QUIET && return; printf "\n${BOLD}${BLUE}── %s ──${NC}\n" "$*"; }
 
 die() { err "$1"; exit 1; }
 
 # URL encode (pure bash via jq)
 urlencode() { jq -sRr @uri <<< "$1" | sed 's/%0A$//'; }
 
+# Retry wrapper for API calls (handles 429 / transient errors)
+# Usage: api_retry curl -sf "https://..."
+api_retry() {
+    local max_retries=3 retry_delay=2 attempt=0
+    local output rc
+    while [[ $attempt -lt $max_retries ]]; do
+        output=$("$@" 2>&1) && { echo "$output"; return 0; }
+        rc=$?
+        if echo "$output" | grep -q "429\|rate.limit\|Too Many"; then
+            ((attempt++)) || true
+            debug "Rate limited, retry $attempt/$max_retries in ${retry_delay}s..."
+            sleep "$retry_delay"
+            retry_delay=$((retry_delay * 2))
+        else
+            echo "$output"
+            return $rc
+        fi
+    done
+    echo "$output"
+    return 1
+}
+
+# Detect language from subtitle text
+detect_lang() {
+    local sample="$1"
+    if echo "$sample" | grep -qiE '\b(the|and|is|are|you|that|this|have|with)\b'; then echo "en"
+    elif echo "$sample" | grep -qiE '\b(le|la|les|des|est|une|que|pas|avec|dans)\b'; then echo "fr"
+    elif echo "$sample" | grep -qiE '\b(der|die|das|und|ist|ein|nicht|ich|mit|auf)\b'; then echo "de"
+    elif echo "$sample" | grep -qiE '\b(el|la|los|las|que|del|una|por|con|para)\b'; then echo "es"
+    elif echo "$sample" | grep -qiE '\b(il|la|che|non|per|una|con|sono|del|questo)\b'; then echo "it"
+    elif echo "$sample" | grep -qiE '\b(o|que|de|da|em|um|uma|com|para|por)\b'; then echo "pt"
+    fi
+}
+
+# Validate SRT format (returns 0 if valid, 1 if broken)
+validate_srt() {
+    local file="$1"
+    [[ ! -s "$file" ]] && return 1
+    # Must have at least one timestamp line
+    grep -qE '[0-9]{2}:[0-9]{2}:[0-9]{2}[,\.][0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2}[,\.][0-9]{3}' "$file" || return 1
+    # Must have at least one numeric index
+    grep -qE '^[0-9]+$' "$file" || return 1
+    return 0
+}
 
 # ── Config ────────────────────────────────────────────────────────────────────
 init_config() {
@@ -109,16 +159,7 @@ load_config() {
     AI_PROVIDER="${DEFAULT_AI_PROVIDER:-claude-code}"
 }
 
-# ── Hash du fichier pour identification ───────────────────────────────────────
-compute_hash() {
-    local file="$1"
-    # OpenSubtitles utilise un hash custom (premiers et derniers 64KB + taille)
-    local filesize
-    filesize=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
-    echo "$filesize"
-}
-
-# ── OpenSubtitles API v2 (rest) ──────────────────────────────────────────────
+# ── OpenSubtitles API v1 (rest) ───────────────────────────────────────────────
 opensubtitles_token=""
 
 opensubtitles_login() {
@@ -135,9 +176,48 @@ opensubtitles_login() {
     return 0
 }
 
+declare -A _features_cache 2>/dev/null || true
+
+resolve_opensubtitles_imdb() {
+    local query="$1"
+
+    # Check cache
+    if [[ -n "${_features_cache[$query]:-}" ]]; then
+        debug "Features cache hit: $query -> ${_features_cache[$query]}"
+        echo "${_features_cache[$query]}"
+        return 0
+    fi
+
+    local headers=(-H "Api-Key: $OPENSUBTITLES_API_KEY" -H "Content-Type: application/json")
+    [[ -n "$opensubtitles_token" ]] && headers+=(-H "Authorization: Bearer $opensubtitles_token")
+
+    local resp
+    resp=$(curl -sf "https://api.opensubtitles.com/api/v1/features?query=$(urlencode "$query")" "${headers[@]}" 2>/dev/null) || return 1
+
+    local imdb
+    imdb=$(echo "$resp" | jq -r '.data[0].attributes.imdb_id // empty' 2>/dev/null)
+    if [[ -n "$imdb" ]]; then
+        _features_cache[$query]="$imdb"
+        echo "$imdb"
+    fi
+}
+
 search_opensubtitles() {
     local query="$1" lang="$2" imdb_id="${3:-}" season="${4:-}" episode="${5:-}"
     [[ -z "${OPENSUBTITLES_API_KEY:-}" ]] && { warn "OpenSubtitles: API key manquante (OPENSUBTITLES_API_KEY)" >&2; return 1; }
+
+    local headers=(-H "Api-Key: $OPENSUBTITLES_API_KEY" -H "Content-Type: application/json")
+    [[ -n "$opensubtitles_token" ]] && headers+=(-H "Authorization: Bearer $opensubtitles_token")
+
+    # Si pas d'imdb_id, essayer de resoudre via /features d'abord
+    if [[ -z "$imdb_id" && -n "$query" ]]; then
+        local resolved_imdb
+        resolved_imdb=$(resolve_opensubtitles_imdb "$query" 2>/dev/null) || true
+        if [[ -n "${resolved_imdb:-}" ]]; then
+            info "OpenSubtitles: titre resolu -> IMDb $resolved_imdb" >&2
+            imdb_id="$resolved_imdb"
+        fi
+    fi
 
     local params="languages=$lang"
     if [[ -n "$imdb_id" ]]; then
@@ -147,9 +227,6 @@ search_opensubtitles() {
     fi
     [[ -n "$season" ]] && params+="&season_number=$season"
     [[ -n "$episode" ]] && params+="&episode_number=$episode"
-
-    local headers=(-H "Api-Key: $OPENSUBTITLES_API_KEY" -H "Content-Type: application/json")
-    [[ -n "$opensubtitles_token" ]] && headers+=(-H "Authorization: Bearer $opensubtitles_token")
 
     local resp
     resp=$(curl -sf "https://api.opensubtitles.com/api/v1/subtitles?$params" "${headers[@]}" 2>/dev/null) || return 1
@@ -232,13 +309,17 @@ download_podnapisi() {
     local tmp_zip="$CACHE_DIR/podnapisi_${sub_id}.zip"
     curl -sf -o "$tmp_zip" "https://www.podnapisi.net/subtitles/${sub_id}/download" 2>/dev/null || return 1
 
-    # Extraire le .srt du zip
     local tmp_dir="$CACHE_DIR/podnapisi_extract_$$"
     mkdir -p "$tmp_dir"
-    unzip -qo "$tmp_zip" -d "$tmp_dir" 2>/dev/null || return 1
+    unzip -qo "$tmp_zip" -d "$tmp_dir" 2>/dev/null || { rm -rf "$tmp_dir" "$tmp_zip"; return 1; }
     local srt_file
     srt_file=$(find "$tmp_dir" -name "*.srt" -o -name "*.ass" -o -name "*.sub" | head -1)
-    [[ -n "$srt_file" ]] && mv "$srt_file" "$output" && rm -rf "$tmp_dir" "$tmp_zip"
+    if [[ -n "$srt_file" ]]; then
+        mv "$srt_file" "$output" && rm -rf "$tmp_dir" "$tmp_zip"
+    else
+        rm -rf "$tmp_dir" "$tmp_zip"
+        return 1
+    fi
 }
 
 # ── SubDL ─────────────────────────────────────────────────────────────────────
@@ -275,10 +356,15 @@ download_subdl() {
 
     local tmp_dir="$CACHE_DIR/subdl_extract_$$"
     mkdir -p "$tmp_dir"
-    unzip -qo "$tmp_zip" -d "$tmp_dir" 2>/dev/null || return 1
+    unzip -qo "$tmp_zip" -d "$tmp_dir" 2>/dev/null || { rm -rf "$tmp_dir" "$tmp_zip"; return 1; }
     local srt_file
     srt_file=$(find "$tmp_dir" -name "*.srt" -o -name "*.ass" -o -name "*.sub" | head -1)
-    [[ -n "$srt_file" ]] && mv "$srt_file" "$output" && rm -rf "$tmp_dir" "$tmp_zip"
+    if [[ -n "$srt_file" ]]; then
+        mv "$srt_file" "$output" && rm -rf "$tmp_dir" "$tmp_zip"
+    else
+        rm -rf "$tmp_dir" "$tmp_zip"
+        return 1
+    fi
 }
 
 # ── Recherche multi-source ────────────────────────────────────────────────────
@@ -320,15 +406,13 @@ select_subtitle() {
     local entries=()
     local i=1
 
-    header "Sous-titres trouves"
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-        local name source downloads
+        local name src_name downloads
         name=$(echo "$line" | jq -r '.name // "N/A"' 2>/dev/null)
-        source=$(echo "$line" | jq -r '.source // "?"' 2>/dev/null)
+        src_name=$(echo "$line" | jq -r '.source // "?"' 2>/dev/null)
         downloads=$(echo "$line" | jq -r '.downloads // 0' 2>/dev/null)
         [[ -z "$name" || "$name" == "null" ]] && continue
-        printf "  ${BOLD}%2d${NC}) [${CYAN}%-15s${NC}] %s ${YELLOW}(%s DL)${NC}\n" "$i" "$source" "$name" "$downloads"
         entries+=("$line")
         ((i++)) || true
     done <<< "$results"
@@ -336,6 +420,47 @@ select_subtitle() {
     if [[ ${#entries[@]} -eq 0 ]]; then
         return 1
     fi
+
+    # JSON output mode
+    if $JSON_OUTPUT; then
+        printf '['
+        for ((j=0; j<${#entries[@]}; j++)); do
+            [[ $j -gt 0 ]] && printf ','
+            echo "${entries[$j]}"
+        done
+        printf ']\n'
+        return 1  # don't proceed to download in JSON mode
+    fi
+
+    # Auto-select first result
+    if $AUTO_SELECT; then
+        debug "Auto-select: premier resultat"
+        echo "${entries[0]}"
+        return 0
+    fi
+
+    # Dry-run: just display results
+    if $DRY_RUN; then
+        header "Sous-titres trouves"
+        for ((j=0; j<${#entries[@]}; j++)); do
+            local name src_name downloads
+            name=$(echo "${entries[$j]}" | jq -r '.name // "N/A"' 2>/dev/null)
+            src_name=$(echo "${entries[$j]}" | jq -r '.source // "?"' 2>/dev/null)
+            downloads=$(echo "${entries[$j]}" | jq -r '.downloads // 0' 2>/dev/null)
+            printf "  ${BOLD}%2d${NC}) [${CYAN}%-15s${NC}] %s ${YELLOW}(%s DL)${NC}\n" "$((j+1))" "$src_name" "$name" "$downloads"
+        done
+        return 1
+    fi
+
+    # Interactive selection
+    header "Sous-titres trouves"
+    for ((j=0; j<${#entries[@]}; j++)); do
+        local name src_name downloads
+        name=$(echo "${entries[$j]}" | jq -r '.name // "N/A"' 2>/dev/null)
+        src_name=$(echo "${entries[$j]}" | jq -r '.source // "?"' 2>/dev/null)
+        downloads=$(echo "${entries[$j]}" | jq -r '.downloads // 0' 2>/dev/null)
+        printf "  ${BOLD}%2d${NC}) [${CYAN}%-15s${NC}] %s ${YELLOW}(%s DL)${NC}\n" "$((j+1))" "$src_name" "$name" "$downloads"
+    done
 
     printf "\n"
     local choice
@@ -373,15 +498,14 @@ chunk_srt() {
     local chunk_num=0
     local line_count=0
     local current_chunk=""
-    local in_block=false
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         current_chunk+="$line"$'\n'
         ((line_count++))
 
-        # Quand on atteint un bloc vide (separateur SRT) et qu'on a assez de lignes
-        if [[ -z "$(echo "$line" | tr -d '[:space:]')" ]] && [[ $line_count -ge $max_lines ]]; then
-            echo "$current_chunk" > "$CACHE_DIR/chunk_${chunk_num}.srt"
+        # Split on SRT block boundary (blank line) when we have enough lines
+        if [[ "$line" =~ ^[[:space:]]*$ ]] && [[ $line_count -ge $max_lines ]]; then
+            printf '%s' "$current_chunk" > "$CACHE_DIR/chunk_${chunk_num}.srt"
             ((chunk_num++))
             line_count=0
             current_chunk=""
@@ -390,11 +514,15 @@ chunk_srt() {
 
     # Dernier chunk
     if [[ -n "$current_chunk" ]]; then
-        echo "$current_chunk" > "$CACHE_DIR/chunk_${chunk_num}.srt"
+        printf '%s' "$current_chunk" > "$CACHE_DIR/chunk_${chunk_num}.srt"
         ((chunk_num++))
     fi
 
     echo "$chunk_num"
+}
+
+_translate_prompt() {
+    echo "Translate this SRT subtitle file from $1 to $2. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
 }
 
 translate_with_claude_code() {
@@ -406,11 +534,12 @@ translate_with_claude_code() {
         return 1
     fi
 
-    local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
+    local prompt
+    prompt=$(_translate_prompt "$src_lang" "$target_lang")
     local content
     content=$(<"$input")
 
-    CLAUDECODE= claude -p "$prompt
+    CLAUDECODE='' claude -p "$prompt
 
 $content" > "$output" 2>/dev/null
 }
@@ -421,7 +550,8 @@ translate_with_zai_codeplan() {
     local model="${AI_MODEL:-$MODEL_ZAI_CODEPLAN}"
     info "Traduction avec Z.ai Coding Plan ($model)..."
 
-    local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
+    local prompt
+    prompt=$(_translate_prompt "$src_lang" "$target_lang")
 
     local resp
     resp=$(curl -sf "https://api.z.ai/api/coding/paas/v4/chat/completions" \
@@ -445,7 +575,8 @@ translate_with_openai() {
     local model="${AI_MODEL:-$MODEL_OPENAI}"
     info "Traduction avec OpenAI ($model)..."
 
-    local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
+    local prompt
+    prompt=$(_translate_prompt "$src_lang" "$target_lang")
 
     local escaped_content
     escaped_content=$(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)
@@ -472,7 +603,8 @@ translate_with_claude() {
     local model="${AI_MODEL:-$MODEL_CLAUDE}"
     info "Traduction avec Claude API ($model)..."
 
-    local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
+    local prompt
+    prompt=$(_translate_prompt "$src_lang" "$target_lang")
 
     local resp
     resp=$(curl -sf "https://api.anthropic.com/v1/messages" \
@@ -496,7 +628,8 @@ translate_with_mistral() {
     local model="${AI_MODEL:-$MODEL_MISTRAL}"
     info "Traduction avec Mistral ($model)..."
 
-    local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
+    local prompt
+    prompt=$(_translate_prompt "$src_lang" "$target_lang")
 
     local resp
     resp=$(curl -sf "https://api.mistral.ai/v1/chat/completions" \
@@ -519,7 +652,8 @@ translate_with_gemini() {
     local model="${AI_MODEL:-$MODEL_GEMINI}"
     info "Traduction avec Gemini ($model)..."
 
-    local prompt="Translate this SRT subtitle file from $src_lang to $target_lang. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
+    local prompt
+    prompt=$(_translate_prompt "$src_lang" "$target_lang")
 
     local resp
     resp=$(curl -sf "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
@@ -534,6 +668,20 @@ translate_with_gemini() {
     echo "$resp" | jq -r '.candidates[0].content.parts[0].text' > "$output"
 }
 
+# Dispatch translation to the selected provider
+_translate_dispatch() {
+    local input="$1" output="$2" src_lang="$3" target_lang="$4" provider="$5"
+    case "$provider" in
+        claude-code) translate_with_claude_code "$input" "$output" "$src_lang" "$target_lang" ;;
+        zai-codeplan) translate_with_zai_codeplan "$input" "$output" "$src_lang" "$target_lang" ;;
+        openai)      translate_with_openai "$input" "$output" "$src_lang" "$target_lang" ;;
+        claude)      translate_with_claude "$input" "$output" "$src_lang" "$target_lang" ;;
+        mistral)     translate_with_mistral "$input" "$output" "$src_lang" "$target_lang" ;;
+        gemini)      translate_with_gemini "$input" "$output" "$src_lang" "$target_lang" ;;
+        *) die "Provider AI inconnu: $provider" ;;
+    esac
+}
+
 # Traduction principale avec chunking
 translate_subtitle() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4" provider="$5"
@@ -545,47 +693,38 @@ translate_subtitle() {
     total_lines=$(wc -l < "$input" | tr -d ' ')
 
     if [[ $total_lines -le 300 ]]; then
-        # Fichier assez petit, traduction directe
-        case "$provider" in
-            claude-code) translate_with_claude_code "$input" "$output" "$src_lang" "$target_lang" ;;
-            zai-codeplan) translate_with_zai_codeplan "$input" "$output" "$src_lang" "$target_lang" ;;
-            openai)      translate_with_openai "$input" "$output" "$src_lang" "$target_lang" ;;
-            claude)      translate_with_claude "$input" "$output" "$src_lang" "$target_lang" ;;
-            mistral)     translate_with_mistral "$input" "$output" "$src_lang" "$target_lang" ;;
-            gemini)      translate_with_gemini "$input" "$output" "$src_lang" "$target_lang" ;;
-            *) die "Provider AI inconnu: $provider" ;;
-        esac
+        _translate_dispatch "$input" "$output" "$src_lang" "$target_lang" "$provider"
     else
-        # Fichier gros: on chunk
         info "Fichier volumineux ($total_lines lignes), decoupage en chunks..."
         local num_chunks
         num_chunks=$(chunk_srt "$input" 250)
         info "$num_chunks chunks a traduire"
 
-        > "$output"  # vider le fichier de sortie
+        : > "$output"
 
         for ((i=0; i<num_chunks; i++)); do
             local chunk_in="$CACHE_DIR/chunk_${i}.srt"
             local chunk_out="$CACHE_DIR/chunk_${i}_translated.srt"
             info "Chunk $((i+1))/$num_chunks..."
 
-            case "$provider" in
-                claude-code) translate_with_claude_code "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
-                zai-codeplan) translate_with_zai_codeplan "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
-                openai)      translate_with_openai "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
-                claude)      translate_with_claude "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
-                mistral)     translate_with_mistral "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
-                gemini)      translate_with_gemini "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" ;;
-                *) die "Provider AI inconnu: $provider" ;;
-            esac
+            _translate_dispatch "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" "$provider"
 
-            cat "$chunk_out" >> "$output"
+            if [[ -s "$chunk_out" ]]; then
+                cat "$chunk_out" >> "$output"
+            else
+                warn "Chunk $((i+1)) vide, skip"
+            fi
             rm -f "$chunk_in" "$chunk_out"
         done
     fi
 
     if [[ -s "$output" ]]; then
-        log "Traduction terminee: $output"
+        # Validate that the output is still valid SRT
+        if validate_srt "$output"; then
+            log "Traduction terminee: $output"
+        else
+            warn "Traduction terminee mais le format SRT semble casse: $output"
+        fi
     else
         err "La traduction a echoue (fichier vide)"
         return 1
@@ -595,10 +734,24 @@ translate_subtitle() {
 # ── Traduction d'un fichier local ─────────────────────────────────────────────
 translate_local_file() {
     local input="$1" src_lang="$2" target_lang="$3" provider="$4"
-    local basename
-    basename=$(basename "$input" | sed 's/\.[^.]*$//')
+
+    # Auto-detect source language if not specified
+    if [[ -z "$src_lang" ]]; then
+        local sample
+        sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$input" | head -20 | tr '\n' ' ')
+        src_lang=$(detect_lang "$sample")
+        if [[ -n "$src_lang" ]]; then
+            info "Langue source detectee: $src_lang"
+        else
+            src_lang="en"
+            info "Langue source non detectee, defaut: en"
+        fi
+    fi
+
+    local bname
+    bname=$(basename "$input" | sed 's/\.[^.]*$//')
     local ext="${input##*.}"
-    local output="${OUTPUT_DIR}/${basename}.${target_lang}.${ext}"
+    local output="${OUTPUT_DIR}/${bname}.${target_lang}.${ext}"
 
     translate_subtitle "$input" "$output" "$src_lang" "$target_lang" "$provider"
 }
@@ -623,10 +776,11 @@ ${BOLD}COMMANDES${NC}
     autosync    Sync auto avec video/audio via ffsubsync
     convert     Convertir entre formats (SRT <-> VTT <-> ASS)
     merge       Fusionner 2 sous-titres en bilingue
-    fix         Reparer un SRT (encodage UTF-8, renumerotation, chevauchements)
+    fix         Reparer un SRT (encodage UTF-8, tri, renumerotation, chevauchements)
     extract     Extraire les sous-titres d'une video (MKV, MP4)
     embed       Incruster un SRT dans une video
-    config      Afficher/editer la configuration
+    config      Afficher/editer la configuration (config set <KEY> <VALUE>)
+    check       Diagnostic (deps, cles API, config)
     providers   Lister les providers AI disponibles
     sources     Lister les sources de sous-titres
 
@@ -651,6 +805,11 @@ ${BOLD}OPTIONS${NC}
     --sub <fichier>           Fichier SRT pour embed dans une video
     --track <num>             Piste a extraire pour extract
     --force-translate         Forcer la traduction meme si sous-titres trouves
+    --auto                    Selectionner automatiquement le premier resultat
+    --dry-run                 Afficher les resultats sans telecharger
+    --json                    Sortie JSON (pour integration dans d'autres outils)
+    --verbose                 Afficher les infos de debug
+    --quiet                   Mode silencieux (erreurs uniquement)
     -h, --help                Afficher cette aide
     -v, --version             Afficher la version
 
@@ -741,6 +900,30 @@ cmd_providers() {
 # ── Commande: config ──────────────────────────────────────────────────────────
 cmd_config() {
     init_config
+
+    # config set <key> <value>
+    if [[ "${CONFIG_SUBCMD:-}" == "set" ]]; then
+        local key="$CONFIG_KEY" value="$CONFIG_VALUE"
+        [[ -z "$key" ]] && die "Usage: subtool config set <KEY> <VALUE>"
+        # Update or add the key
+        if grep -q "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i.bak "s|^${key}=.*|${key}=\"${value}\"|" "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
+        else
+            echo "${key}=\"${value}\"" >> "$CONFIG_FILE"
+        fi
+        log "Config: $key = $value"
+        return
+    fi
+
+    # config get <key>
+    if [[ "${CONFIG_SUBCMD:-}" == "get" ]]; then
+        local key="$CONFIG_KEY"
+        [[ -z "$key" ]] && die "Usage: subtool config get <KEY>"
+        grep "^${key}=" "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo ""
+        return
+    fi
+
+    # config (edit)
     if [[ -n "${EDITOR:-}" ]]; then
         "$EDITOR" "$CONFIG_FILE"
     elif command -v nano &>/dev/null; then
@@ -751,6 +934,65 @@ cmd_config() {
         info "Fichier de config: $CONFIG_FILE"
         printf "\n"
         cat "$CONFIG_FILE"
+    fi
+}
+
+# ── Commande: check (diagnostic) ─────────────────────────────────────────────
+cmd_check() {
+    header "Diagnostic subtool"
+
+    local ok=true
+
+    # Required deps
+    printf "\n  ${BOLD}Dependances requises:${NC}\n"
+    for dep in jq curl; do
+        if command -v "$dep" &>/dev/null; then
+            printf "  ${GREEN}OK${NC}  %-15s %s\n" "$dep" "$(command -v "$dep")"
+        else
+            printf "  ${RED}MANQUANT${NC}  %s\n" "$dep"
+            ok=false
+        fi
+    done
+
+    # Optional deps
+    printf "\n  ${BOLD}Dependances optionnelles:${NC}\n"
+    for dep in ffmpeg ffprobe; do
+        if command -v "$dep" &>/dev/null; then
+            printf "  ${GREEN}OK${NC}  %-15s %s\n" "$dep" "$(command -v "$dep")"
+        else
+            printf "  ${YELLOW}N/A${NC}  %-15s (extract/embed/autosync)\n" "$dep"
+        fi
+    done
+    if python3 -c "import ffsubsync" 2>/dev/null; then
+        printf "  ${GREEN}OK${NC}  %-15s\n" "ffsubsync"
+    else
+        printf "  ${YELLOW}N/A${NC}  %-15s (autosync)\n" "ffsubsync"
+    fi
+    if command -v claude &>/dev/null; then
+        printf "  ${GREEN}OK${NC}  %-15s\n" "claude-code"
+    else
+        printf "  ${YELLOW}N/A${NC}  %-15s (provider claude-code)\n" "claude CLI"
+    fi
+
+    # API keys
+    printf "\n  ${BOLD}Cles API:${NC}\n"
+    for key_name in OPENSUBTITLES_API_KEY SUBDL_API_KEY ZAI_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY MISTRAL_API_KEY GEMINI_API_KEY; do
+        local val="${!key_name:-}"
+        if [[ -n "$val" ]]; then
+            printf "  ${GREEN}OK${NC}  %-25s %s...%s\n" "$key_name" "${val:0:4}" "${val: -4}"
+        else
+            printf "  ${YELLOW}N/A${NC}  %s\n" "$key_name"
+        fi
+    done
+
+    printf "\n  ${BOLD}Config:${NC} %s\n" "$CONFIG_FILE"
+    printf "  ${BOLD}Cache:${NC}  %s\n" "$CACHE_DIR"
+
+    if $ok; then
+        printf "\n  ${GREEN}Tout est OK!${NC}\n"
+    else
+        printf "\n  ${RED}Des dependances requises manquent.${NC}\n"
+        return 1
     fi
 }
 
@@ -916,7 +1158,8 @@ cmd_get() {
             opensubtitles_login 2>/dev/null || true
 
             local success=0 fail=0 translated=0
-            local season_dir="${OUTPUT_DIR}/S$(printf '%02d' "$PARSED_SEASON")"
+            local season_dir
+            season_dir="${OUTPUT_DIR}/S$(printf '%02d' "$PARSED_SEASON")"
             mkdir -p "$season_dir"
 
             for ep in $(seq "$start_ep" "$end_ep"); do
@@ -1090,7 +1333,8 @@ cmd_batch() {
     opensubtitles_login 2>/dev/null || true
 
     local success=0 fail=0 translated=0
-    local season_dir="${OUTPUT_DIR}/S$(printf '%02d' "$SEASON")"
+    local season_dir
+    season_dir="${OUTPUT_DIR}/S$(printf '%02d' "$SEASON")"
     mkdir -p "$season_dir"
 
     for ep in $(seq 1 "$max_ep"); do
@@ -1180,7 +1424,7 @@ cmd_translate() {
     [[ -z "$LANG_TARGET" ]] && die "Specifie --lang <code_langue_cible>"
     [[ ! -f "$FILE_PATH" ]] && die "Fichier introuvable: $FILE_PATH"
 
-    local src_lang="${SRC_LANG:-en}"
+    local src_lang="${SRC_LANG:-}"
     translate_local_file "$FILE_PATH" "$src_lang" "$LANG_TARGET" "$AI_PROVIDER"
 }
 
@@ -1524,7 +1768,7 @@ cmd_merge() {
 
     # Merge the two files
     local idx=0
-    > "$output"
+    : > "$output"
     while IFS='|' read -r start end_ts text; do
         ((idx++)) || true
         local sec_text=""
@@ -1610,6 +1854,21 @@ cmd_fix() {
     }
     END {
         flush()
+
+        # Sort blocks by start timestamp
+        sorted = 0
+        for (i = 1; i < count; i++) {
+            for (j = i + 1; j <= count; j++) {
+                if (ts2ms(starts[i]) > ts2ms(starts[j])) {
+                    tmp = starts[i]; starts[i] = starts[j]; starts[j] = tmp
+                    tmp = ends[i]; ends[i] = ends[j]; ends[j] = tmp
+                    tmp = texts[i]; texts[i] = texts[j]; texts[j] = tmp
+                    sorted++
+                }
+            }
+        }
+        if (sorted > 0)
+            printf "  Blocs reordonnes: %d swaps\n", sorted > "/dev/stderr"
 
         # Fix overlaps
         fixes = 0
@@ -1793,12 +2052,24 @@ cmd_autosync() {
 SRC_LANG=""
 COMMAND=""
 EMBED_SUB=""
+CONFIG_SUBCMD=""
+CONFIG_KEY=""
+CONFIG_VALUE=""
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            get|search|translate|batch|info|clean|sync|autosync|convert|merge|fix|extract|embed|config|providers|sources)
+            get|search|translate|batch|info|clean|sync|autosync|convert|merge|fix|extract|embed|providers|sources|check)
                 COMMAND="$1"; shift ;;
+            config)
+                COMMAND="config"; shift
+                # Parse config sub-commands: config set KEY VALUE / config get KEY
+                if [[ $# -gt 0 && ("$1" == "set" || "$1" == "get") ]]; then
+                    CONFIG_SUBCMD="$1"; shift
+                    if [[ $# -gt 0 ]]; then CONFIG_KEY="$1"; shift; fi
+                    if [[ $# -gt 0 && "$CONFIG_SUBCMD" == "set" ]]; then CONFIG_VALUE="$1"; shift; fi
+                fi
+                ;;
             -q|--query)    SEARCH_QUERY="$2"; shift 2 ;;
             -l|--lang)     LANG_TARGET="$2"; shift 2 ;;
             -i|--imdb)     IMDB_ID="$2"; shift 2 ;;
@@ -1819,11 +2090,22 @@ parse_args() {
             --track)       EXTRACT_TRACK="$2"; shift 2 ;;
             --ref)         AUTOSYNC_REF="$2"; shift 2 ;;
             --force-translate) FORCE_TRANSLATE=true; shift ;;
+            --auto)        AUTO_SELECT=true; shift ;;
+            --dry-run)     DRY_RUN=true; shift ;;
+            --json)        JSON_OUTPUT=true; QUIET=true; shift ;;
+            --verbose)     VERBOSE=true; shift ;;
+            --quiet)       QUIET=true; shift ;;
             -h|--help)     usage; exit 0 ;;
             -v|--version)  echo "$VERSION"; exit 0 ;;
             *)             die "Option inconnue: $1. Utilise --help" ;;
         esac
     done
+}
+
+# ── Cleanup trap ──────────────────────────────────────────────────────────────
+cleanup() {
+    # Remove temp chunk files on exit
+    rm -f "$CACHE_DIR"/chunk_*.srt 2>/dev/null || true
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1834,6 +2116,7 @@ main() {
     [[ -z "$COMMAND" ]] && { usage; exit 0; }
 
     mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+    trap cleanup EXIT
 
     case "$COMMAND" in
         get)       cmd_get ;;
@@ -1850,6 +2133,7 @@ main() {
         extract)   cmd_extract ;;
         embed)     cmd_embed ;;
         config)    cmd_config ;;
+        check)     cmd_check ;;
         providers) cmd_providers ;;
         sources)   cmd_sources ;;
         *)         die "Commande inconnue: $COMMAND" ;;

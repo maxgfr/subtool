@@ -1,0 +1,11 @@
+1
+00:00:01,000 --> 00:00:03,500
+Schöne Grüße aus Deutschland\!
+
+2
+00:00:04,000 --> 00:00:07,200
+Das ist ein Übersetzungstest.
+
+3
+00:00:08,500 --> 00:00:11,000
+Guten Tag, wie geht's?

@@ -115,7 +115,7 @@ subtool convert -f subs.ass --to srt
 # Merge bilingual subtitles
 subtool merge -f primary.srt --merge-with secondary.srt
 
-# Fix broken subtitles (renumber, fix overlaps, UTF-8)
+# Fix broken subtitles (renumber, fix overlaps, sort by timestamp, UTF-8)
 subtool fix -f broken.srt
 
 # Extract subtitles from video
@@ -123,6 +123,33 @@ subtool extract -f video.mkv --track 0
 
 # Embed subtitles into video
 subtool embed -f video.mkv --sub subs.srt -l fr
+
+# Check environment (deps, API keys, config)
+subtool check
+```
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--auto` | Auto-select first result (no interactive prompt) |
+| `--dry-run` | Show results without downloading |
+| `--json` | Output results as JSON (implies `--quiet`) |
+| `--verbose` | Show debug output |
+| `--quiet` | Suppress informational messages |
+
+```bash
+# Auto-select first subtitle match
+subtool get -q "Inception" -l fr --auto
+
+# Dry-run: see what would be downloaded
+subtool get -q "Inception" -l fr --dry-run
+
+# JSON output for scripting
+subtool search -q "Inception" -l fr --json
+
+# Verbose debug output
+subtool get -q "Inception" -l fr --verbose
 ```
 
 ## Configuration
@@ -130,8 +157,10 @@ subtool embed -f video.mkv --sub subs.srt -l fr
 ```bash
 subtool config                    # Show current config
 subtool config set key value      # Set a config value
+subtool config get key            # Get a config value
 subtool providers                 # List AI providers and models
 subtool sources                   # List subtitle sources
+subtool check                     # Diagnostic: deps, API keys, paths
 ```
 
 API keys are stored in `~/.config/subtool/config`:

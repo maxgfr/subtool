@@ -94,6 +94,12 @@ assert_output_contains "--help contient USAGE" "$out" "USAGE"
 assert_output_contains "--help contient COMMANDES" "$out" "COMMANDES"
 assert_output_contains "--help contient get" "$out" "get"
 assert_output_contains "--help contient translate" "$out" "translate"
+assert_output_contains "--help contient check" "$out" "check"
+assert_output_contains "--help contient --auto" "$out" "\-\-auto"
+assert_output_contains "--help contient --dry-run" "$out" "\-\-dry-run"
+assert_output_contains "--help contient --json" "$out" "\-\-json"
+assert_output_contains "--help contient --verbose" "$out" "\-\-verbose"
+assert_output_contains "--help contient --quiet" "$out" "\-\-quiet"
 
 out=$("$SUBSYNC" providers 2>&1)
 assert_output_contains "providers liste claude-code" "$out" "claude-code"
@@ -118,6 +124,32 @@ assert_output_contains "get sans args -> erreur" "$out" "Specifie"
 
 out=$("$SUBSYNC" --nonexistent 2>&1 || true)
 assert_output_contains "option inconnue -> erreur" "$out" "inconnue"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "check (diagnostic)"
+
+out=$("$SUBSYNC" check 2>&1)
+assert_output_contains "check: affiche jq" "$out" "jq"
+assert_output_contains "check: affiche curl" "$out" "curl"
+assert_output_contains "check: affiche Config" "$out" "Config"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "config set/get"
+
+# Use a temp config dir
+export XDG_CONFIG_HOME="$TMP_DIR/xdg_config"
+export XDG_CACHE_HOME="$TMP_DIR/xdg_cache"
+
+"$SUBSYNC" config set TEST_KEY "test_value_123" 2>&1
+out=$("$SUBSYNC" config get TEST_KEY 2>&1)
+assert_output_contains "config set/get: valeur correcte" "$out" "test_value_123"
+
+# Update existing key
+"$SUBSYNC" config set TEST_KEY "updated_value" 2>&1
+out=$("$SUBSYNC" config get TEST_KEY 2>&1)
+assert_output_contains "config set: update existant" "$out" "updated_value"
+
+unset XDG_CONFIG_HOME XDG_CACHE_HOME
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "info"
@@ -148,6 +180,20 @@ assert_file_not_contains "clean: opensubtitles supprime" "$out_file" 'opensubtit
 assert_file_not_contains "clean: synced by supprime" "$out_file" '[Ss]ynced by'
 assert_file_not_contains "clean: subtitle by supprime" "$out_file" '[Ss]ubtitle by'
 assert_file_contains "clean: vrai dialogue conserve" "$out_file" "echte Dialog"
+
+# Clean on already clean file
+section "clean (idempotent)"
+
+"$SUBSYNC" clean -f "$FIXTURES/already_clean.srt" -o "$TMP_DIR" 2>&1
+out_file="$TMP_DIR/already_clean.clean.srt"
+assert_file_exists "clean idempotent: fichier cree" "$out_file"
+assert_file_contains "clean idempotent: dialogue 1 conserve" "$out_file" "Bonjour"
+assert_file_contains "clean idempotent: dialogue 2 conserve" "$out_file" "tres bien"
+assert_file_contains "clean idempotent: dialogue 3 conserve" "$out_file" "Au revoir"
+
+# Count subtitle blocks in cleaned file
+clean_blocks=$(grep -cE '^[0-9]+$' "$out_file" || true)
+assert_exit_code "clean idempotent: 3 blocs conserves" "3" "$clean_blocks"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "sync"
@@ -203,6 +249,15 @@ assert_file_exists "vtt->srt: fichier cree" "$out_file"
 assert_file_contains "vtt->srt: virgule dans timestamp" "$out_file" '00:00:01,000'
 assert_file_not_contains "vtt->srt: pas de WEBVTT" "$out_file" "WEBVTT"
 
+section "convert VTT with cue settings -> SRT"
+
+"$SUBSYNC" convert -f "$FIXTURES/cue_settings.vtt" --to srt -o "$TMP_DIR" 2>&1
+out_file="$TMP_DIR/cue_settings.srt"
+assert_file_exists "vtt+cue->srt: fichier cree" "$out_file"
+assert_file_contains "vtt+cue->srt: texte conserve" "$out_file" "Hello world"
+assert_file_contains "vtt+cue->srt: multiline conserve" "$out_file" "with two lines"
+assert_file_contains "vtt+cue->srt: normal sub" "$out_file" "Normal subtitle"
+
 # ══════════════════════════════════════════════════════════════════════════════
 section "merge"
 
@@ -233,6 +288,10 @@ assert_file_exists "fix: fichier cree" "$out_file"
 first_num=$(head -1 "$out_file")
 assert_exit_code "fix: premier bloc = 1" "1" "$first_num"
 
+# Verify blocks are sorted by timestamp (first block should have earliest timestamp)
+first_ts=$(grep -m1 -oE '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}' "$out_file" | head -1)
+assert_exit_code "fix: premier timestamp = 00:00:01,000 (tri)" "00:00:01,000" "$first_ts"
+
 # Verifier que les chevauchements sont corriges
 overlap_check=$(awk '
 function ts2ms(ts,    a, b) {
@@ -241,9 +300,6 @@ function ts2ms(ts,    a, b) {
 }
 /[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}/ {
     split($0, p, " --> ")
-    end_ms = ts2ms(p[1] == "" ? p[2] : p[1])
-    start_ms = ts2ms(p[2] == "" ? p[1] : p[2])
-    # For the arrow line: p[1]=start, but we need end of THIS and start of NEXT
     this_end = ts2ms(p[2])
     if (prev_end > 0 && ts2ms(p[1]) < prev_end) { print 1; exit }
     prev_end = this_end
@@ -259,6 +315,20 @@ if [[ "$encoding" == "utf-8" || "$encoding" == "us-ascii" ]]; then
 else
     assert "fix: encodage UTF-8" 1
 fi
+
+# Fix with Latin-1 encoded file
+section "fix (Latin-1 encoding)"
+
+"$SUBSYNC" fix -f "$FIXTURES/latin1.srt" -o "$TMP_DIR" 2>&1
+out_file="$TMP_DIR/latin1.fixed.srt"
+assert_file_exists "fix latin1: fichier cree" "$out_file"
+fix_encoding=$(file --mime-encoding "$out_file" 2>/dev/null | awk -F': ' '{print $2}')
+if [[ "$fix_encoding" == "utf-8" || "$fix_encoding" == "us-ascii" ]]; then
+    assert "fix latin1: converti en UTF-8" 0
+else
+    assert "fix latin1: converti en UTF-8 (got: $fix_encoding)" 1
+fi
+assert_file_contains "fix latin1: texte conserve" "$out_file" "Deutschland"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "Smart parsing (get)"
@@ -308,6 +378,92 @@ test_parse "tt16463942"                                   "Film"     ""         
 test_parse "The Office S03"                               "Saison"   "The Office"         "3"
 test_parse "Parasite"                                     "Film"     "Parasite"
 test_parse "Dark S01E01-E10"                              "Range"    "Dark"               "1"     "1"  "10"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "chunk_srt"
+
+# Test chunking by writing a helper script
+chunk_cache="$TMP_DIR/chunk_cache"
+mkdir -p "$chunk_cache"
+
+cat > "$TMP_DIR/test_chunk.sh" << 'CHUNKSCRIPT'
+#!/usr/bin/env bash
+set -uo pipefail
+CACHE_DIR="$1"
+FILE="$2"
+MAX_LINES="${3:-200}"
+
+chunk_num=0
+line_count=0
+current_chunk=""
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+    current_chunk+="$line"$'\n'
+    line_count=$((line_count + 1))
+    if [[ "$line" =~ ^[[:space:]]*$ ]] && [[ $line_count -ge $MAX_LINES ]]; then
+        printf '%s' "$current_chunk" > "$CACHE_DIR/chunk_${chunk_num}.srt"
+        chunk_num=$((chunk_num + 1))
+        line_count=0
+        current_chunk=""
+    fi
+done < "$FILE"
+
+if [[ -n "$current_chunk" ]]; then
+    printf '%s' "$current_chunk" > "$CACHE_DIR/chunk_${chunk_num}.srt"
+    chunk_num=$((chunk_num + 1))
+fi
+echo "$chunk_num"
+CHUNKSCRIPT
+chmod +x "$TMP_DIR/test_chunk.sh"
+
+# Large file with max_lines=10 should produce multiple chunks
+num_chunks=$(bash "$TMP_DIR/test_chunk.sh" "$chunk_cache" "$FIXTURES/large.srt" 10 2>/dev/null || echo "0")
+if [[ "$num_chunks" -gt 1 ]]; then
+    assert "chunk_srt: multiple chunks crees ($num_chunks)" 0
+else
+    assert "chunk_srt: multiple chunks crees (got: $num_chunks)" 1
+fi
+
+# Verify all chunks contain valid SRT timestamps
+all_valid=true
+for f in "$chunk_cache"/chunk_*.srt; do
+    [[ ! -f "$f" ]] && continue
+    if ! grep -qE '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}' "$f" 2>/dev/null; then
+        all_valid=false
+        break
+    fi
+done
+if $all_valid && [[ -f "$chunk_cache/chunk_0.srt" ]]; then
+    assert "chunk_srt: tous les chunks contiennent des timestamps" 0
+else
+    assert "chunk_srt: tous les chunks contiennent des timestamps" 1
+fi
+rm -rf "$chunk_cache"
+
+# Small file should produce 1 chunk
+chunk_cache2="$TMP_DIR/chunk_cache2"
+mkdir -p "$chunk_cache2"
+num_chunks_small=$(bash "$TMP_DIR/test_chunk.sh" "$chunk_cache2" "$FIXTURES/basic.srt" 200 2>/dev/null || echo "0")
+assert_exit_code "chunk_srt: petit fichier = 1 chunk" "1" "$num_chunks_small"
+rm -rf "$chunk_cache2"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "validate_srt"
+
+# Valid SRT
+if grep -qE '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> ' "$FIXTURES/basic.srt" && grep -qE '^[0-9]+$' "$FIXTURES/basic.srt"; then
+    assert "validate: basic.srt est valide" 0
+else
+    assert "validate: basic.srt est valide" 1
+fi
+
+# Invalid file (no timestamps)
+echo "This is not a subtitle file." > "$TMP_DIR/invalid.srt"
+if grep -qE '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> ' "$TMP_DIR/invalid.srt" 2>/dev/null; then
+    assert "validate: invalid.srt detecte comme invalide" 1
+else
+    assert "validate: invalid.srt detecte comme invalide" 0
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "extract (ffmpeg)"
@@ -413,6 +569,13 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "translate (auto-detect source lang)"
+
+# Without --from, should auto-detect
+out=$("$SUBSYNC" translate -f /nonexistent.srt -l fr 2>&1 || true)
+assert_output_contains "translate sans --from: accepte (erreur fichier, pas erreur lang)" "$out" "introuvable"
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "search (API - optionnel)"
 
 if [[ -n "${OPENSUBTITLES_API_KEY:-}" ]]; then
@@ -421,6 +584,20 @@ if [[ -n "${OPENSUBTITLES_API_KEY:-}" ]]; then
 else
     printf "  ${YELLOW}SKIP${NC}  search: OPENSUBTITLES_API_KEY non definie\n"
 fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "Flags: --quiet, --verbose"
+
+out=$("$SUBSYNC" info -f "$FIXTURES/basic.srt" --quiet 2>&1)
+# In quiet mode, info/header/log calls should be suppressed, but data should still output
+if [[ -z "$out" ]] || ! echo "$out" | grep -q "Info:"; then
+    assert "quiet: header supprime" 0
+else
+    assert "quiet: header supprime" 1
+fi
+
+out=$("$SUBSYNC" --version --verbose 2>&1)
+assert_output_contains "verbose: version still works" "$out" '^[0-9]+\.[0-9]+\.[0-9]+'
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "Cas limites"

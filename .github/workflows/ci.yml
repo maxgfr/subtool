@@ -55,4 +55,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run shellcheck
-        run: shellcheck -x -S warning subtool.sh || true
+        run: shellcheck -x -S warning subtool.sh
