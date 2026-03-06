@@ -1,0 +1,23 @@
+1
+00:00:01,000 --> 00:00:03,500
+Willkommen bei Kolinski!
+
+2
+00:00:04,000 --> 00:00:07,200
+Hier gibt es die besten Angebote
+in ganz Eimbuettel.
+
+3
+00:00:08,500 --> 00:00:11,000
+Tara, kannst du bitte
+die Regale einraumen?
+
+4
+00:00:11,500 --> 00:00:14,800
+Ich hab gerade Pause, Peter.
+Das steht mir zu.
+
+5
+00:00:15,200 --> 00:00:18,500
+Wir haben hier keine Pause!
+Wir sind ein Discounter!

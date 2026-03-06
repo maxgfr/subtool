@@ -1,0 +1,23 @@
+1
+00:00:01,000 --> 00:00:03,500
+Bienvenue chez Kolinski !
+
+2
+00:00:04,000 --> 00:00:07,200
+Ici, on trouve les meilleures offres
+de tout Eimbuettel.
+
+3
+00:00:08,500 --> 00:00:11,000
+Tara, tu peux ranger
+les rayons ?
+
+4
+00:00:11,500 --> 00:00:14,800
+Je suis en pause, Peter.
+C'est mon droit.
+
+5
+00:00:15,200 --> 00:00:18,500
+On ne fait pas de pause ici !
+On est un discounter !

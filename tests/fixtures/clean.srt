@@ -1,0 +1,35 @@
+1
+00:00:01,000 --> 00:00:03,500
+<i>Willkommen bei Kolinski!</i>
+
+2
+00:00:04,000 --> 00:00:07,200
+<b><font color="#ff0000">Hier gibt es die besten Angebote</font></b>
+
+3
+00:00:08,500 --> 00:00:11,000
+[Musik spielt]
+
+4
+00:00:11,500 --> 00:00:14,800
+(Gelächter)
+
+5
+00:00:15,200 --> 00:00:18,500
+♪ La la la ♪
+
+6
+00:00:19,000 --> 00:00:22,300
+Synced by some_guy_2024
+
+7
+00:00:22,800 --> 00:00:25,500
+Downloaded from www.opensubtitles.com
+
+8
+00:00:26,000 --> 00:00:29,200
+Das ist der echte Dialog.
+
+9
+00:00:30,000 --> 00:00:33,500
+Subtitle by xSubz_team

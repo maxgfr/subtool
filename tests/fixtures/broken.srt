@@ -1,0 +1,19 @@
+3
+00:00:08,500 --> 00:00:11,000
+Premier bloc mais mauvais numero.
+
+1
+00:00:01,000 --> 00:00:03,500
+Deuxieme bloc.
+
+5
+00:00:04,000 --> 00:00:09,000
+Chevauchement avec le suivant.
+
+8
+00:00:07,500 --> 00:00:11,000
+Ce bloc chevauche le precedent.
+
+10
+00:00:15,200 --> 00:00:18,500
+Dernier bloc normal.
