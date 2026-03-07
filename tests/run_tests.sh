@@ -108,9 +108,8 @@ assert_output_contains "providers liste openai" "$out" "openai"
 assert_output_contains "providers liste gemini" "$out" "gemini"
 
 out=$("$SUBSYNC" sources 2>&1)
-assert_output_contains "sources liste opensubtitles" "$out" "opensubtitles"
+assert_output_contains "sources liste opensubtitles-org" "$out" "opensubtitles-org"
 assert_output_contains "sources liste podnapisi" "$out" "podnapisi"
-assert_output_contains "sources liste subdl" "$out" "subdl"
 
 # Erreurs attendues
 out=$("$SUBSYNC" search 2>&1 || true)
@@ -578,12 +577,8 @@ assert_output_contains "translate sans --from: accepte (erreur fichier, pas erre
 # ══════════════════════════════════════════════════════════════════════════════
 section "search (API - optionnel)"
 
-if [[ -n "${OPENSUBTITLES_API_KEY:-}" ]]; then
-    out=$("$SUBSYNC" search -q "Inception" -l en -e 0 2>&1 </dev/null || true)
-    assert_output_contains "search opensubtitles: resultats" "$out" "Sous-titres trouves\|Aucun"
-else
-    printf "  ${YELLOW}SKIP${NC}  search: OPENSUBTITLES_API_KEY non definie\n"
-fi
+out=$("$SUBSYNC" search -q "Inception" -l en --sources opensubtitles-org --dry-run 2>&1 </dev/null || true)
+assert_output_contains "search opensubtitles-org: resultats" "$out" "Sous-titres trouves|Recherche sur"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "Flags: --quiet, --verbose"
@@ -629,6 +624,85 @@ assert_output_contains "info fichier inexistant: erreur" "$out" "introuvable"
 # Just test that parse works, don't need actual translation
 out=$("$SUBSYNC" translate -f /nonexistent.srt -l fr 2>&1 || true)
 assert_output_contains "translate fichier inexistant: erreur" "$out" "introuvable"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "autosync"
+
+# autosync sans args -> erreur
+out=$("$SUBSYNC" autosync 2>&1 || true)
+assert_output_contains "autosync sans --file -> erreur" "$out" "Specifie.*--file"
+
+# autosync sans --ref -> erreur
+out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" 2>&1 || true)
+assert_output_contains "autosync sans --ref -> erreur" "$out" "Specifie.*--ref"
+
+# autosync fichier inexistant -> erreur
+out=$("$SUBSYNC" autosync -f /nonexistent.srt --ref /nonexistent.mkv 2>&1 || true)
+assert_output_contains "autosync fichier inexistant -> erreur" "$out" "introuvable"
+
+# autosync sans ffsubsync -> message uvx ou fallback uvx
+if ! command -v ffsubsync &>/dev/null && ! command -v uvx &>/dev/null; then
+    out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" 2>&1 || true)
+    assert_output_contains "autosync sans ffsubsync ni uvx -> erreur" "$out" "uvx ffsubsync\|uv tool install"
+elif ! command -v ffsubsync &>/dev/null && command -v uvx &>/dev/null; then
+    out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" 2>&1 || true)
+    assert_output_contains "autosync via uvx: fallback detecte" "$out" "uvx"
+else
+    printf "  ${YELLOW}SKIP${NC}  autosync sans ffsubsync: ffsubsync est installe\n"
+fi
+
+# autosync avec ffsubsync installe (test fonctionnel)
+if command -v ffsubsync &>/dev/null; then
+    "$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1
+    autosync_out="$TMP_DIR/basic.synced.srt"
+    assert_file_exists "autosync srt<->srt: fichier cree" "$autosync_out"
+    assert_file_contains "autosync srt<->srt: timestamps valides" "$autosync_out" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
+    assert_file_contains "autosync srt<->srt: texte conserve" "$autosync_out" "Willkommen"
+else
+    printf "  ${YELLOW}SKIP${NC}  autosync fonctionnel: ffsubsync non disponible\n"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "scan"
+
+# scan sans args -> erreur
+out=$("$SUBSYNC" scan 2>&1 || true)
+assert_output_contains "scan sans --dir -> erreur" "$out" "Specifie.*--dir"
+
+# scan dossier inexistant -> erreur
+out=$("$SUBSYNC" scan --dir /nonexistent_dir -l fr 2>&1 || true)
+assert_output_contains "scan dossier inexistant -> erreur" "$out" "introuvable"
+
+# scan sans --lang -> erreur
+out=$("$SUBSYNC" scan --dir "$TMP_DIR" 2>&1 || true)
+assert_output_contains "scan sans --lang -> erreur" "$out" "Specifie.*--lang"
+
+# scan dossier vide (pas de videos) -> dry-run
+scan_dir="$TMP_DIR/scan_empty"
+mkdir -p "$scan_dir"
+out=$("$SUBSYNC" scan --dir "$scan_dir" -l fr --dry-run 2>&1 || true)
+assert_output_contains "scan dossier vide: scan header" "$out" "scan"
+
+# scan dossier avec faux fichier video (dry-run, pas de reseau)
+scan_dir2="$TMP_DIR/scan_videos"
+mkdir -p "$scan_dir2"
+touch "$scan_dir2/My.Movie.2024.mkv"
+touch "$scan_dir2/My.Movie.2024.fr.srt"  # already has subtitle
+out=$("$SUBSYNC" scan --dir "$scan_dir2" -l fr --dry-run 2>&1 || true)
+assert_output_contains "scan avec sub existant: skip detecte" "$out" "Skip.*existe"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "check (ffsubsync detection)"
+
+out=$("$SUBSYNC" check 2>&1)
+assert_output_contains "check: affiche ffsubsync" "$out" "ffsubsync"
+if command -v ffsubsync &>/dev/null; then
+    assert_output_contains "check: ffsubsync OK (installe)" "$out" "OK.*ffsubsync"
+elif command -v uvx &>/dev/null; then
+    assert_output_contains "check: ffsubsync OK (via uvx)" "$out" "via uvx"
+else
+    assert_output_contains "check: ffsubsync N/A avec hint uvx" "$out" "uvx ffsubsync\|uv tool install"
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RESULTATS

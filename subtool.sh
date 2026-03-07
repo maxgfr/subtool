@@ -13,7 +13,7 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 LANG_TARGET=""
-AI_PROVIDER="claude-code"
+AI_PROVIDER="google"
 SEARCH_QUERY=""
 IMDB_ID=""
 FILE_PATH=""
@@ -21,15 +21,17 @@ SEASON=""
 EPISODE=""
 OUTPUT_DIR="."
 FORCE_TRANSLATE=false
-SOURCES="opensubtitles,podnapisi,subdl"
+SOURCES="opensubtitles-org,podnapisi"
 FALLBACK_LANGS="en,de,es,pt"
 MAX_EPISODE=20
 AI_MODEL=""
 AUTO_SELECT=false
+AUTO_EMBED=false
 DRY_RUN=false
 JSON_OUTPUT=false
 VERBOSE=false
 QUIET=false
+SUBTITLE_URL=""
 
 # ── Modeles par defaut ────────────────────────────────────────────────────────
 MODEL_ZAI_CODEPLAN="glm-4.7"
@@ -39,12 +41,12 @@ MODEL_MISTRAL="mistral-large-latest"
 MODEL_GEMINI="gemini-2.0-flash"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-log()    { $QUIET && return; printf "${GREEN}[+]${NC} %s\n" "$*"; }
+log()    { { $QUIET && return; printf "${GREEN}[+]${NC} %s\n" "$*"; } || true; }
 warn()   { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
 err()    { printf "${RED}[x]${NC} %s\n" "$*" >&2; }
-info()   { $QUIET && return; printf "${CYAN}[i]${NC} %s\n" "$*"; }
-debug()  { $VERBOSE && printf "${BLUE}[D]${NC} %s\n" "$*" >&2; }
-header() { $QUIET && return; printf "\n${BOLD}${BLUE}── %s ──${NC}\n" "$*"; }
+info()   { { $QUIET && return; printf "${CYAN}[i]${NC} %s\n" "$*"; } || true; }
+debug()  { $VERBOSE && printf "${BLUE}[D]${NC} %s\n" "$*" >&2 || true; }
+header() { { $QUIET && return; printf "\n${BOLD}${BLUE}── %s ──${NC}\n" "$*"; } || true; }
 
 die() { err "$1"; exit 1; }
 
@@ -91,8 +93,8 @@ validate_srt() {
     [[ ! -s "$file" ]] && return 1
     # Must have at least one timestamp line
     grep -qE '[0-9]{2}:[0-9]{2}:[0-9]{2}[,\.][0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2}[,\.][0-9]{3}' "$file" || return 1
-    # Must have at least one numeric index
-    grep -qE '^[0-9]+$' "$file" || return 1
+    # Must have at least one numeric index (tolerate BOM and \r)
+    grep -qE '^(\xef\xbb\xbf)?[0-9]+\r?$' "$file" || return 1
     return 0
 }
 
@@ -102,13 +104,8 @@ init_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         cat > "$CONFIG_FILE" << 'CONF'
 # subtool configuration
-# API keys pour les sources de sous-titres
-OPENSUBTITLES_API_KEY=""
-OPENSUBTITLES_USERNAME=""
-OPENSUBTITLES_PASSWORD=""
-SUBDL_API_KEY=""
 
-# API keys pour la traduction AI
+# API keys pour la traduction AI (optionnel — claude-code fonctionne sans cle)
 OPENAI_API_KEY=""
 ANTHROPIC_API_KEY=""
 MISTRAL_API_KEY=""
@@ -116,9 +113,10 @@ GEMINI_API_KEY=""
 ZAI_API_KEY=""
 
 # Provider AI par defaut: claude-code, zai-codeplan, openai, claude, mistral, gemini
-DEFAULT_AI_PROVIDER="claude-code"
+DEFAULT_AI_PROVIDER="google"  # ou: claude-code, openai, claude, mistral, gemini
 
 # Modeles par defaut (laisser vide pour utiliser les valeurs par defaut)
+MODEL_CLAUDE_CODE=""
 MODEL_ZAI_CODEPLAN=""
 MODEL_OPENAI=""
 MODEL_CLAUDE=""
@@ -126,15 +124,12 @@ MODEL_MISTRAL=""
 MODEL_GEMINI=""
 CONF
         info "Config creee: $CONFIG_FILE"
-        info "Edite-la pour ajouter tes cles API"
     fi
 }
 
 load_config() {
     init_config
     # Sauvegarder les vars d'env existantes avant source
-    local _saved_opensubtitles="${OPENSUBTITLES_API_KEY:-}"
-    local _saved_subdl="${SUBDL_API_KEY:-}"
     local _saved_openai="${OPENAI_API_KEY:-}"
     local _saved_anthropic="${ANTHROPIC_API_KEY:-}"
     local _saved_mistral="${MISTRAL_API_KEY:-}"
@@ -143,125 +138,161 @@ load_config() {
     # shellcheck source=/dev/null
     [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
     # Les vars d'env ont priorite sur le fichier config
-    [[ -n "$_saved_opensubtitles" ]] && OPENSUBTITLES_API_KEY="$_saved_opensubtitles"
-    [[ -n "$_saved_subdl" ]] && SUBDL_API_KEY="$_saved_subdl"
     [[ -n "$_saved_openai" ]] && OPENAI_API_KEY="$_saved_openai"
     [[ -n "$_saved_anthropic" ]] && ANTHROPIC_API_KEY="$_saved_anthropic"
     [[ -n "$_saved_mistral" ]] && MISTRAL_API_KEY="$_saved_mistral"
     [[ -n "$_saved_gemini" ]] && GEMINI_API_KEY="$_saved_gemini"
     [[ -n "$_saved_zai" ]] && ZAI_API_KEY="$_saved_zai"
     # Restaurer les modeles par defaut si le config les a mis a vide
+    [[ -z "${MODEL_CLAUDE_CODE:-}" ]] && MODEL_CLAUDE_CODE="haiku"
     [[ -z "$MODEL_ZAI_CODEPLAN" ]] && MODEL_ZAI_CODEPLAN="glm-4.7"
     [[ -z "$MODEL_OPENAI" ]] && MODEL_OPENAI="gpt-4o"
     [[ -z "$MODEL_CLAUDE" ]] && MODEL_CLAUDE="claude-sonnet-4-20250514"
     [[ -z "$MODEL_MISTRAL" ]] && MODEL_MISTRAL="mistral-large-latest"
     [[ -z "$MODEL_GEMINI" ]] && MODEL_GEMINI="gemini-2.0-flash"
-    AI_PROVIDER="${DEFAULT_AI_PROVIDER:-claude-code}"
+    AI_PROVIDER="${DEFAULT_AI_PROVIDER:-google}"
 }
 
-# ── OpenSubtitles API v1 (rest) ───────────────────────────────────────────────
-opensubtitles_token=""
-
-opensubtitles_login() {
-    [[ -z "${OPENSUBTITLES_API_KEY:-}" ]] && { warn "OPENSUBTITLES_API_KEY non configuree"; return 1; }
-
-    if [[ -n "${OPENSUBTITLES_USERNAME:-}" && -n "${OPENSUBTITLES_PASSWORD:-}" ]]; then
-        local resp
-        resp=$(curl -sf -X POST "https://api.opensubtitles.com/api/v1/login" \
-            -H "Api-Key: $OPENSUBTITLES_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"username\":\"$OPENSUBTITLES_USERNAME\",\"password\":\"$OPENSUBTITLES_PASSWORD\"}" 2>/dev/null) || return 1
-        opensubtitles_token=$(echo "$resp" | jq -r '.token // empty')
-    fi
-    return 0
-}
-
-declare -A _features_cache 2>/dev/null || true
-
-resolve_opensubtitles_imdb() {
-    local query="$1"
-
-    # Check cache
-    if [[ -n "${_features_cache[$query]:-}" ]]; then
-        debug "Features cache hit: $query -> ${_features_cache[$query]}"
-        echo "${_features_cache[$query]}"
-        return 0
-    fi
-
-    local headers=(-H "Api-Key: $OPENSUBTITLES_API_KEY" -H "Content-Type: application/json")
-    [[ -n "$opensubtitles_token" ]] && headers+=(-H "Authorization: Bearer $opensubtitles_token")
-
-    local resp
-    resp=$(curl -sf "https://api.opensubtitles.com/api/v1/features?query=$(urlencode "$query")" "${headers[@]}" 2>/dev/null) || return 1
-
-    local imdb
-    imdb=$(echo "$resp" | jq -r '.data[0].attributes.imdb_id // empty' 2>/dev/null)
-    if [[ -n "$imdb" ]]; then
-        _features_cache[$query]="$imdb"
-        echo "$imdb"
-    fi
-}
-
-search_opensubtitles() {
+# ── OpenSubtitles.org (gratuit, sans cle API) ─────────────────────────────────
+search_opensubtitles_org() {
     local query="$1" lang="$2" imdb_id="${3:-}" season="${4:-}" episode="${5:-}"
-    [[ -z "${OPENSUBTITLES_API_KEY:-}" ]] && { warn "OpenSubtitles: API key manquante (OPENSUBTITLES_API_KEY)" >&2; return 1; }
 
-    local headers=(-H "Api-Key: $OPENSUBTITLES_API_KEY" -H "Content-Type: application/json")
-    [[ -n "$opensubtitles_token" ]] && headers+=(-H "Authorization: Bearer $opensubtitles_token")
+    # Mapping langue -> code 3 lettres OpenSubtitles
+    local lang3
+    case "$lang" in
+        fr|fre|fra) lang3="fre" ;; en|eng)     lang3="eng" ;; es|spa)     lang3="spa" ;;
+        de|ger|deu) lang3="ger" ;; it|ita)     lang3="ita" ;; pt|por)     lang3="por" ;;
+        ru|rus)     lang3="rus" ;; ar|ara)     lang3="ara" ;; ja|jpn)     lang3="jpn" ;;
+        ko|kor)     lang3="kor" ;; zh|chi|zho) lang3="chi" ;; nl|dut|nld) lang3="dut" ;;
+        pl|pol)     lang3="pol" ;; sv|swe)     lang3="swe" ;; da|dan)     lang3="dan" ;;
+        fi|fin)     lang3="fin" ;; no|nor)     lang3="nor" ;; tr|tur)     lang3="tur" ;;
+        *)          lang3="$lang" ;;
+    esac
 
-    # Si pas d'imdb_id, essayer de resoudre via /features d'abord
-    if [[ -z "$imdb_id" && -n "$query" ]]; then
-        local resolved_imdb
-        resolved_imdb=$(resolve_opensubtitles_imdb "$query" 2>/dev/null) || true
-        if [[ -n "${resolved_imdb:-}" ]]; then
-            info "OpenSubtitles: titre resolu -> IMDb $resolved_imdb" >&2
-            imdb_id="$resolved_imdb"
-        fi
-    fi
+    # L'API .org exige du lowercase sinon 302 vers host invalide
+    local lower_query
+    lower_query=$(echo "$query" | tr '[:upper:]' '[:lower:]')
+    local encoded_query
+    encoded_query=$(urlencode "$lower_query")
 
-    local params="languages=$lang"
-    if [[ -n "$imdb_id" ]]; then
-        params+="&imdb_id=$imdb_id"
-    elif [[ -n "$query" ]]; then
-        params+="&query=$(urlencode "$query")"
-    fi
-    [[ -n "$season" ]] && params+="&season_number=$season"
-    [[ -n "$episode" ]] && params+="&episode_number=$episode"
+    # L'API .org ne supporte pas query + season + episode dans le meme path
+    # On cherche par query + langue, puis on filtre cote client
+    local url="https://rest.opensubtitles.org/search/query-${encoded_query}/sublanguageid-${lang3}"
 
     local resp
-    resp=$(curl -sf "https://api.opensubtitles.com/api/v1/subtitles?$params" "${headers[@]}" 2>/dev/null) || return 1
+    resp=$(curl -sf "$url" -H "User-Agent: subtool v${VERSION}" 2>/dev/null) || return 1
 
     local count
-    count=$(echo "$resp" | jq '.data | length' 2>/dev/null)
+    count=$(echo "$resp" | jq 'length' 2>/dev/null) || true
     [[ "$count" == "0" || -z "$count" ]] && return 1
 
-    echo "$resp" | jq -c '.data[] | {
-        id: .attributes.files[0].file_id,
-        name: .attributes.release,
-        lang: .attributes.language,
-        source: "opensubtitles",
-        downloads: .attributes.download_count,
-        rating: .attributes.ratings
-    }' 2>/dev/null
+    # Filtre saison/episode cote client si demande
+    local filtered
+    if [[ -n "$season" && -n "$episode" ]]; then
+        filtered=$(echo "$resp" | jq -c --arg s "$season" --arg e "$episode" \
+            '[.[] | select(.SeriesSeason == $s and .SeriesEpisode == $e)]' 2>/dev/null) || true
+    elif [[ -n "$season" ]]; then
+        filtered=$(echo "$resp" | jq -c --arg s "$season" \
+            '[.[] | select(.SeriesSeason == $s)]' 2>/dev/null) || true
+    else
+        filtered="$resp"
+    fi
+
+    local fcount
+    fcount=$(echo "$filtered" | jq 'length' 2>/dev/null) || true
+    [[ "$fcount" == "0" || -z "$fcount" ]] && return 1
+
+    echo "$filtered" | jq -c '.[] | {
+        id: .SubDownloadLink,
+        name: .SubFileName,
+        lang: .LanguageName,
+        source: "opensubtitles-org",
+        downloads: (.SubDownloadsCnt | tonumber),
+        rating: (.SubRating | tonumber)
+    }' 2>/dev/null || true
 }
 
-download_opensubtitles() {
-    local file_id="$1" output="$2"
-    [[ -z "${OPENSUBTITLES_API_KEY:-}" ]] && return 1
+download_opensubtitles_org() {
+    local download_link="$1" output="$2"
+    local tmp_gz="$CACHE_DIR/osorg_$$.gz"
+    curl -sf -o "$tmp_gz" "$download_link" \
+        -H "User-Agent: subtool v${VERSION}" 2>/dev/null || return 1
+    gunzip -f "$tmp_gz" 2>/dev/null || return 1
+    mv "${tmp_gz%.gz}" "$output" 2>/dev/null || return 1
+}
 
-    local headers=(-H "Api-Key: $OPENSUBTITLES_API_KEY" -H "Content-Type: application/json")
-    [[ -n "$opensubtitles_token" ]] && headers+=(-H "Authorization: Bearer $opensubtitles_token")
+# ── Download from OpenSubtitles.org page URL ──────────────────────────────────
+download_from_url() {
+    local url="$1" output="$2"
 
-    local resp
-    resp=$(curl -sf -X POST "https://api.opensubtitles.com/api/v1/download" \
-        "${headers[@]}" \
-        -d "{\"file_id\":$file_id}" 2>/dev/null) || return 1
+    # Accept various opensubtitles.org URL formats:
+    # https://www.opensubtitles.org/en/subtitles/1234567/...
+    # https://www.opensubtitles.org/en/subtitleserve/sub/1234567
+    # https://dl.opensubtitles.org/en/download/sub/1234567
+    local sub_id=""
 
-    local link
-    link=$(echo "$resp" | jq -r '.link // empty' 2>/dev/null)
-    [[ -z "$link" ]] && return 1
+    if [[ "$url" =~ opensubtitles\.org/[a-z]{2}/subtitles/([0-9]+) ]]; then
+        sub_id="${BASH_REMATCH[1]}"
+    elif [[ "$url" =~ opensubtitles\.org/[a-z]{2}/subtitleserve/sub/([0-9]+) ]]; then
+        sub_id="${BASH_REMATCH[1]}"
+    elif [[ "$url" =~ opensubtitles\.org/[a-z]{2}/download/sub/([0-9]+) ]]; then
+        sub_id="${BASH_REMATCH[1]}"
+    elif [[ "$url" =~ ^https?:// ]]; then
+        # Generic URL — try direct download (might be .srt, .gz, .zip)
+        local tmp_file="$CACHE_DIR/url_download_$$"
+        curl -sfL -o "$tmp_file" "$url" -H "User-Agent: subtool v${VERSION}" 2>/dev/null || { err "Echec telechargement: $url"; return 1; }
+        # Detect file type
+        local ftype
+        ftype=$(file -b "$tmp_file" 2>/dev/null)
+        if [[ "$ftype" == *gzip* ]]; then
+            mv "$tmp_file" "${tmp_file}.gz"
+            gunzip -f "${tmp_file}.gz" 2>/dev/null || { rm -f "${tmp_file}.gz"; return 1; }
+            mv "$tmp_file" "$output"
+        elif [[ "$ftype" == *Zip* ]]; then
+            local tmp_dir="$CACHE_DIR/url_extract_$$"
+            mkdir -p "$tmp_dir"
+            unzip -qo "$tmp_file" -d "$tmp_dir" 2>/dev/null
+            local srt_found
+            srt_found=$(/usr/bin/find "$tmp_dir" -iname "*.srt" | head -1)
+            if [[ -n "$srt_found" ]]; then
+                mv "$srt_found" "$output"
+            fi
+            rm -rf "$tmp_dir" "$tmp_file"
+        else
+            mv "$tmp_file" "$output"
+        fi
+        [[ -s "$output" ]] && return 0 || return 1
+    else
+        err "URL non reconnue: $url"
+        return 1
+    fi
 
-    curl -sf -o "$output" "$link" 2>/dev/null
+    # OpenSubtitles.org subtitle ID download
+    if [[ -n "$sub_id" ]]; then
+        local dl_url="https://dl.opensubtitles.org/en/download/sub/${sub_id}"
+        local tmp_gz="$CACHE_DIR/url_${sub_id}_$$.gz"
+        curl -sfL -o "$tmp_gz" "$dl_url" -H "User-Agent: subtool v${VERSION}" 2>/dev/null || { err "Echec telechargement: $dl_url"; return 1; }
+        # The response might be a zip file
+        local ftype
+        ftype=$(file -b "$tmp_gz" 2>/dev/null)
+        if [[ "$ftype" == *gzip* ]]; then
+            gunzip -f "$tmp_gz" 2>/dev/null || return 1
+            mv "${tmp_gz%.gz}" "$output" 2>/dev/null || return 1
+        elif [[ "$ftype" == *Zip* ]]; then
+            local tmp_dir="$CACHE_DIR/url_extract_$$"
+            mkdir -p "$tmp_dir"
+            unzip -qo "$tmp_gz" -d "$tmp_dir" 2>/dev/null
+            local srt_found
+            srt_found=$(/usr/bin/find "$tmp_dir" -iname "*.srt" | head -1)
+            if [[ -n "$srt_found" ]]; then
+                mv "$srt_found" "$output"
+            fi
+            rm -rf "$tmp_dir" "$tmp_gz"
+            [[ -s "$output" ]] || return 1
+        else
+            mv "$tmp_gz" "$output" 2>/dev/null || return 1
+        fi
+    fi
 }
 
 # ── Podnapisi ─────────────────────────────────────────────────────────────────
@@ -322,51 +353,6 @@ download_podnapisi() {
     fi
 }
 
-# ── SubDL ─────────────────────────────────────────────────────────────────────
-search_subdl() {
-    local query="$1" lang="$2"
-    [[ -z "${SUBDL_API_KEY:-}" ]] && { warn "SubDL: API key manquante (SUBDL_API_KEY)" >&2; return 1; }
-
-    local encoded_query
-    encoded_query=$(urlencode "$query")
-
-    local resp
-    resp=$(curl -sf "https://api.subdl.com/api/v1/subtitles?api_key=${SUBDL_API_KEY}&film_name=$encoded_query&languages=$lang" 2>/dev/null) || return 1
-
-    local count
-    count=$(echo "$resp" | jq '.subtitles | length' 2>/dev/null)
-    [[ "$count" == "0" || -z "$count" ]] && return 1
-
-    echo "$resp" | jq -c '.subtitles[]? | {
-        id: .sd_id,
-        name: .release_name,
-        lang: .language,
-        source: "subdl",
-        downloads: 0,
-        rating: 0
-    }' 2>/dev/null
-}
-
-download_subdl() {
-    local sub_id="$1" output="$2"
-    [[ -z "${SUBDL_API_KEY:-}" ]] && return 1
-
-    local tmp_zip="$CACHE_DIR/subdl_${sub_id}.zip"
-    curl -sf -o "$tmp_zip" "https://dl.subdl.com/subtitle/${sub_id}" 2>/dev/null || return 1
-
-    local tmp_dir="$CACHE_DIR/subdl_extract_$$"
-    mkdir -p "$tmp_dir"
-    unzip -qo "$tmp_zip" -d "$tmp_dir" 2>/dev/null || { rm -rf "$tmp_dir" "$tmp_zip"; return 1; }
-    local srt_file
-    srt_file=$(find "$tmp_dir" -name "*.srt" -o -name "*.ass" -o -name "*.sub" | head -1)
-    if [[ -n "$srt_file" ]]; then
-        mv "$srt_file" "$output" && rm -rf "$tmp_dir" "$tmp_zip"
-    else
-        rm -rf "$tmp_dir" "$tmp_zip"
-        return 1
-    fi
-}
-
 # ── Recherche multi-source ────────────────────────────────────────────────────
 search_all_sources() {
     local query="$1" lang="$2" imdb_id="${3:-}" season="${4:-}" episode="${5:-}"
@@ -379,14 +365,12 @@ search_all_sources() {
         info "Recherche sur ${BOLD}$source${NC}..." >&2
         local result=""
         case "$source" in
-            opensubtitles)
-                result=$(search_opensubtitles "$query" "$lang" "$imdb_id" "$season" "$episode") ;;
+            opensubtitles-org)
+                result=$(search_opensubtitles_org "$query" "$lang" "$imdb_id" "$season" "$episode") ;;
             podnapisi)
                 result=$(search_podnapisi "$query" "$lang") ;;
-            subdl)
-                result=$(search_subdl "$query" "$lang") ;;
             *)
-                warn "Source inconnue: $source" >&2 ;;
+                warn "Source inconnue: $source" ;;
         esac
         if [[ -n "$result" ]]; then
             found=true
@@ -483,9 +467,8 @@ download_subtitle() {
     id=$(echo "$entry" | jq -r '.id')
 
     case "$source" in
-        opensubtitles) download_opensubtitles "$id" "$output" ;;
-        podnapisi)     download_podnapisi "$id" "$output" ;;
-        subdl)         download_subdl "$id" "$output" ;;
+        opensubtitles-org) download_opensubtitles_org "$id" "$output" ;;
+        podnapisi)         download_podnapisi "$id" "$output" ;;
         *) err "Source inconnue: $source"; return 1 ;;
     esac
 }
@@ -525,9 +508,115 @@ _translate_prompt() {
     echo "Translate this SRT subtitle file from $1 to $2. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
 }
 
+translate_with_google() {
+    local input="$1" output="$2" src_lang="$3" target_lang="$4"
+
+    if ! command -v trans &>/dev/null; then
+        die "translate-shell requis. Installe-le: brew install translate-shell"
+    fi
+
+    # Step 1: Extract only text lines from SRT (skip indices, timestamps, blanks)
+    # Store line numbers to map back later
+    local text_file="$CACHE_DIR/trans_text_$$.txt"
+    local map_file="$CACHE_DIR/trans_map_$$.txt"
+    : > "$text_file"
+    : > "$map_file"
+
+    local lineno=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        ((lineno++)) || true
+        line="${line%$'\r'}"
+        # Skip: blank lines, subtitle indices (bare numbers), timestamps
+        if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] || [[ "$line" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+            continue
+        fi
+        echo "$line" >> "$text_file"
+        echo "$lineno" >> "$map_file"
+    done < "$input"
+
+    local total_text
+    total_text=$(wc -l < "$text_file" | tr -d ' ')
+    info "Google Translate: $total_text lignes de texte a traduire"
+
+    # Step 2: Split text into chunks and translate in parallel
+    local chunk_size=80
+    local num_chunks=$(( (total_text + chunk_size - 1) / chunk_size ))
+    local max_parallel=8
+    info "$num_chunks chunks (max $max_parallel en parallele)"
+
+    # Split text file into chunks
+    local i=0
+    while ((i < num_chunks)); do
+        local start=$((i * chunk_size + 1))
+        sed -n "${start},$((start + chunk_size - 1))p" "$text_file" > "$CACHE_DIR/trans_chunk_${i}.txt"
+        ((i++)) || true
+    done
+
+    # Translate chunks in parallel
+    for ((batch=0; batch<num_chunks; batch+=max_parallel)); do
+        local pids=()
+        local bend=$((batch + max_parallel))
+        [[ $bend -gt $num_chunks ]] && bend=$num_chunks
+
+        for ((j=batch; j<bend; j++)); do
+            (
+                trans -b "${src_lang}:${target_lang}" -i "$CACHE_DIR/trans_chunk_${j}.txt" \
+                    > "$CACHE_DIR/trans_chunk_${j}_out.txt" 2>/dev/null
+            ) &
+            pids+=($!)
+        done
+
+        for pid in "${pids[@]}"; do
+            wait "$pid" || true
+        done
+
+        info "Traduit: $((bend))/$num_chunks chunks"
+    done
+
+    # Step 3: Reassemble translated text
+    local translated_file="$CACHE_DIR/trans_all_$$.txt"
+    : > "$translated_file"
+    for ((i=0; i<num_chunks; i++)); do
+        local chunk_out="$CACHE_DIR/trans_chunk_${i}_out.txt"
+        if [[ -s "$chunk_out" ]]; then
+            cat "$chunk_out" >> "$translated_file"
+        else
+            # Fallback: keep original
+            cat "$CACHE_DIR/trans_chunk_${i}.txt" >> "$translated_file"
+        fi
+        rm -f "$CACHE_DIR/trans_chunk_${i}.txt" "$CACHE_DIR/trans_chunk_${i}_out.txt"
+    done
+
+    # Step 4: Replace text lines in original SRT with translations
+    # Build associative array: line_number -> translated_text
+    local -A replacements=()
+    local idx=0
+    while IFS= read -r ln; do
+        local trans_line=""
+        trans_line=$(sed -n "$((idx+1))p" "$translated_file")
+        replacements[$ln]="$trans_line"
+        ((idx++)) || true
+    done < "$map_file"
+
+    # Write output: copy original, replacing text lines
+    local lineno=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        ((lineno++)) || true
+        if [[ -n "${replacements[$lineno]+x}" ]]; then
+            printf '%s\n' "${replacements[$lineno]}"
+        else
+            printf '%s\n' "$line"
+        fi
+    done < "$input" > "$output"
+
+    # Cleanup
+    rm -f "$text_file" "$map_file" "$translated_file"
+}
+
 translate_with_claude_code() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4"
-    info "Traduction avec Claude Code (claude CLI)..."
+    local model="${AI_MODEL:-$MODEL_CLAUDE_CODE}"
+    info "Traduction avec Claude Code ($model, effort low)..."
 
     if ! command -v claude &>/dev/null; then
         err "claude CLI non installe. Installe-le: npm install -g @anthropic-ai/claude-code"
@@ -539,7 +628,7 @@ translate_with_claude_code() {
     local content
     content=$(<"$input")
 
-    CLAUDECODE='' claude -p "$prompt
+    CLAUDECODE='' claude -p --model "$model" --effort low --tools "" "$prompt
 
 $content" > "$output" 2>/dev/null
 }
@@ -672,13 +761,14 @@ translate_with_gemini() {
 _translate_dispatch() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4" provider="$5"
     case "$provider" in
+        google)      translate_with_google "$input" "$output" "$src_lang" "$target_lang" ;;
         claude-code) translate_with_claude_code "$input" "$output" "$src_lang" "$target_lang" ;;
         zai-codeplan) translate_with_zai_codeplan "$input" "$output" "$src_lang" "$target_lang" ;;
         openai)      translate_with_openai "$input" "$output" "$src_lang" "$target_lang" ;;
         claude)      translate_with_claude "$input" "$output" "$src_lang" "$target_lang" ;;
         mistral)     translate_with_mistral "$input" "$output" "$src_lang" "$target_lang" ;;
         gemini)      translate_with_gemini "$input" "$output" "$src_lang" "$target_lang" ;;
-        *) die "Provider AI inconnu: $provider" ;;
+        *) die "Provider inconnu: $provider" ;;
     esac
 }
 
@@ -686,36 +776,57 @@ _translate_dispatch() {
 translate_subtitle() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4" provider="$5"
 
-    header "Traduction AI ($provider)"
+    header "Traduction ($provider)"
     info "Source: $src_lang -> Cible: $target_lang"
 
-    local total_lines
-    total_lines=$(wc -l < "$input" | tr -d ' ')
-
-    if [[ $total_lines -le 300 ]]; then
+    # Google provider handles its own SRT parsing + batching — no chunking needed
+    if [[ "$provider" == "google" ]]; then
         _translate_dispatch "$input" "$output" "$src_lang" "$target_lang" "$provider"
     else
-        info "Fichier volumineux ($total_lines lignes), decoupage en chunks..."
-        local num_chunks
-        num_chunks=$(chunk_srt "$input" 250)
-        info "$num_chunks chunks a traduire"
+        local total_lines
+        total_lines=$(wc -l < "$input" | tr -d ' ')
+        if [[ $total_lines -le 300 ]]; then
+            _translate_dispatch "$input" "$output" "$src_lang" "$target_lang" "$provider"
+        else
+            info "Fichier volumineux ($total_lines lignes), decoupage en chunks..."
+            local num_chunks
+            num_chunks=$(chunk_srt "$input" 150)
+            local max_parallel=3
+            info "$num_chunks chunks a traduire (max $max_parallel en parallele)"
 
-        : > "$output"
+            : > "$output"
 
-        for ((i=0; i<num_chunks; i++)); do
-            local chunk_in="$CACHE_DIR/chunk_${i}.srt"
-            local chunk_out="$CACHE_DIR/chunk_${i}_translated.srt"
-            info "Chunk $((i+1))/$num_chunks..."
+            # Traduction parallele par lots
+            for ((batch_start=0; batch_start<num_chunks; batch_start+=max_parallel)); do
+                local pids=()
+                local batch_end=$((batch_start + max_parallel))
+                [[ $batch_end -gt $num_chunks ]] && batch_end=$num_chunks
 
-            _translate_dispatch "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" "$provider"
+                for ((i=batch_start; i<batch_end; i++)); do
+                    local chunk_in="$CACHE_DIR/chunk_${i}.srt"
+                    local chunk_out="$CACHE_DIR/chunk_${i}_translated.srt"
+                    info "Chunk $((i+1))/$num_chunks (parallele)..."
+                    _translate_dispatch "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" "$provider" &
+                    pids+=($!)
+                done
 
-            if [[ -s "$chunk_out" ]]; then
-                cat "$chunk_out" >> "$output"
-            else
-                warn "Chunk $((i+1)) vide, skip"
-            fi
-            rm -f "$chunk_in" "$chunk_out"
-        done
+                # Attendre la fin du lot
+                for pid in "${pids[@]}"; do
+                    wait "$pid" || true
+                done
+            done
+
+            # Reassembler dans l'ordre
+            for ((i=0; i<num_chunks; i++)); do
+                local chunk_out="$CACHE_DIR/chunk_${i}_translated.srt"
+                if [[ -s "$chunk_out" ]]; then
+                    cat "$chunk_out" >> "$output"
+                else
+                    warn "Chunk $((i+1)) vide, skip"
+                fi
+                rm -f "$CACHE_DIR/chunk_${i}.srt" "$chunk_out"
+            done
+        fi
     fi
 
     if [[ -s "$output" ]]; then
@@ -766,6 +877,7 @@ ${BOLD}USAGE${NC}
     $SCRIPT_NAME [OPTIONS] <commande>
 
 ${BOLD}COMMANDES${NC}
+    auto        Tout-en-un: download + traduction + embed (--dir ou --file)
     get         Recherche intelligente (parse auto titre/saison/episode)
     search      Recherche manuelle (avec -q/-s/-e)
     batch       Telecharger une saison entiere (avec -s)
@@ -792,9 +904,9 @@ ${BOLD}OPTIONS${NC}
     -e, --episode <num>       Numero d'episode (series)
     -f, --file <fichier>      Fichier SRT a traduire
     -o, --output <dir>        Dossier de sortie (defaut: .)
-    -p, --provider <provider> Provider AI (claude-code|zai-codeplan|openai|claude|mistral|gemini)
+    -p, --provider <provider> Provider traduction (google|claude-code|openai|claude|mistral|gemini)
     -m, --model <model>       Modele AI a utiliser (override le modele par defaut du provider)
-    --sources <src1,src2>     Sources (opensubtitles,podnapisi,subdl)
+    --sources <src1,src2>     Sources (opensubtitles-org,podnapisi)
     --from <lang>             Langue source pour traduction
     --fallback-langs <l1,l2>  Langues de fallback (defaut: en,de,es,pt)
     --max-ep <num>            Nombre max d'episodes par saison (defaut: 20)
@@ -804,6 +916,8 @@ ${BOLD}OPTIONS${NC}
     --ref <video|srt>         Reference pour autosync (video ou SRT)
     --sub <fichier>           Fichier SRT pour embed dans une video
     --track <num>             Piste a extraire pour extract
+    --url <url>               Telecharger un sous-titre depuis une URL opensubtitles.org
+    --embed                   Embed les sous-titres dans la video (auto mode)
     --force-translate         Forcer la traduction meme si sous-titres trouves
     --auto                    Selectionner automatiquement le premier resultat
     --dry-run                 Afficher les resultats sans telecharger
@@ -814,6 +928,11 @@ ${BOLD}OPTIONS${NC}
     -v, --version             Afficher la version
 
 ${BOLD}EXEMPLES${NC}
+    # Auto: download + traduit + embed en une commande
+    $SCRIPT_NAME auto --dir ~/Movies/Die.Discounter -l fr
+    $SCRIPT_NAME auto --dir ~/Movies/Die.Discounter -l fr --embed
+    $SCRIPT_NAME auto -f movie.mkv -l fr
+
     # Smart get - episode unique
     $SCRIPT_NAME get -q \"Die Discounter S01E03\" -l de
 
@@ -861,25 +980,22 @@ cmd_sources() {
     printf "  ${BOLD}%-18s${NC} %-10s %s\n" "Source" "Status" "Description"
     printf "  %-18s %-10s %s\n" "──────────────────" "──────────" "──────────────────────"
 
-    local status
-    if [[ -n "${OPENSUBTITLES_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
-    printf "  ${BOLD}%-18s${NC} ${status}       %s\n" "opensubtitles" "OpenSubtitles.com API v1 (gratuit avec inscription)"
-
-    printf "  ${BOLD}%-18s${NC} ${GREEN}OK${NC}       %s\n" "podnapisi" "Podnapisi.net (pas de cle requise)"
-
-    if [[ -n "${SUBDL_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
-    printf "  ${BOLD}%-18s${NC} ${status}       %s\n" "subdl" "SubDL.com API (gratuit avec inscription)"
+    printf "  ${BOLD}%-18s${NC} ${GREEN}OK${NC}       %s\n" "opensubtitles-org" "OpenSubtitles.org REST (gratuit, sans cle)"
+    printf "  ${BOLD}%-18s${NC} ${GREEN}OK${NC}       %s\n" "podnapisi" "Podnapisi.net (gratuit, sans cle)"
 }
 
 # ── Commande: providers ──────────────────────────────────────────────────────
 cmd_providers() {
-    header "Providers AI pour traduction"
+    header "Providers pour traduction"
     printf "  ${BOLD}%-15s${NC} %-10s %-25s %s\n" "Provider" "Status" "Modele" "Description"
     printf "  %-15s %-10s %-25s %s\n" "───────────────" "──────────" "─────────────────────────" "──────────────────────"
 
     local status
+    if command -v trans &>/dev/null; then status="${GREEN}OK${NC}"; else status="${RED}N/A${NC}"; fi
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "google" "Google Translate" "Defaut, gratuit, ultra rapide (translate-shell)"
+
     if command -v claude &>/dev/null; then status="${GREEN}OK${NC}"; else status="${RED}N/A${NC}"; fi
-    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "claude-code" "(Claude Code CLI)" "Defaut, pas de cle API requise"
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "claude-code" "$MODEL_CLAUDE_CODE" "Claude Code CLI (effort low)"
 
     if [[ -n "${ZAI_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
     printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "zai-codeplan" "$MODEL_ZAI_CODEPLAN" "Z.ai Coding Plan API"
@@ -963,10 +1079,17 @@ cmd_check() {
             printf "  ${YELLOW}N/A${NC}  %-15s (extract/embed/autosync)\n" "$dep"
         fi
     done
-    if python3 -c "import ffsubsync" 2>/dev/null; then
-        printf "  ${GREEN}OK${NC}  %-15s\n" "ffsubsync"
+    if command -v ffsubsync &>/dev/null; then
+        printf "  ${GREEN}OK${NC}  %-15s %s\n" "ffsubsync" "$(command -v ffsubsync)"
+    elif command -v uvx &>/dev/null; then
+        printf "  ${GREEN}OK${NC}  %-15s %s\n" "ffsubsync" "via uvx (a la volee)"
     else
-        printf "  ${YELLOW}N/A${NC}  %-15s (autosync)\n" "ffsubsync"
+        printf "  ${YELLOW}N/A${NC}  %-15s (autosync) — uvx ffsubsync ou: uv tool install ffsubsync\n" "ffsubsync"
+    fi
+    if command -v trans &>/dev/null; then
+        printf "  ${GREEN}OK${NC}  %-15s %s\n" "translate-shell" "$(command -v trans) (Google Translate, defaut)"
+    else
+        printf "  ${YELLOW}N/A${NC}  %-15s brew install translate-shell (provider google)\n" "translate-shell"
     fi
     if command -v claude &>/dev/null; then
         printf "  ${GREEN}OK${NC}  %-15s\n" "claude-code"
@@ -976,7 +1099,7 @@ cmd_check() {
 
     # API keys
     printf "\n  ${BOLD}Cles API:${NC}\n"
-    for key_name in OPENSUBTITLES_API_KEY SUBDL_API_KEY ZAI_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY MISTRAL_API_KEY GEMINI_API_KEY; do
+    for key_name in ZAI_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY MISTRAL_API_KEY GEMINI_API_KEY; do
         local val="${!key_name:-}"
         if [[ -n "$val" ]]; then
             printf "  ${GREEN}OK${NC}  %-25s %s...%s\n" "$key_name" "${val:0:4}" "${val: -4}"
@@ -1155,8 +1278,7 @@ cmd_get() {
 
             header "Telechargement S$(printf '%02d' "$PARSED_SEASON")E$(printf '%02d' "$start_ep")-E$(printf '%02d' "$end_ep")"
 
-            opensubtitles_login 2>/dev/null || true
-
+        
             local success=0 fail=0 translated=0
             local season_dir
             season_dir="${OUTPUT_DIR}/S$(printf '%02d' "$PARSED_SEASON")"
@@ -1245,7 +1367,6 @@ cmd_search() {
     [[ -n "$SEASON" ]] && info "Saison: $SEASON, Episode: $EPISODE"
 
     # Login OpenSubtitles si possible
-    opensubtitles_login 2>/dev/null || true
 
     local results
     if results=$(search_all_sources "$query" "$LANG_TARGET" "$IMDB_ID" "$SEASON" "$EPISODE"); then
@@ -1330,7 +1451,6 @@ cmd_batch() {
     info "Langue: $LANG_TARGET | Episodes: 1-$max_ep"
     info "Provider AI (si fallback): $AI_PROVIDER"
 
-    opensubtitles_login 2>/dev/null || true
 
     local success=0 fail=0 translated=0
     local season_dir
@@ -1435,7 +1555,6 @@ cmd_scan() {
     $DRY_RUN && info "Mode: dry-run (aucun telechargement)"
     $FORCE_TRANSLATE && info "Fallback traduction: actif ($FALLBACK_LANGS)"
 
-    opensubtitles_login 2>/dev/null || true
 
     local success=0 fail=0 skip=0 translated=0 total=0
 
@@ -1545,6 +1664,215 @@ cmd_scan() {
         log "Total: $total | Skips: $skip | A traiter: $((total - skip))"
     else
         log "Total: $total | Telecharges: $success | Traduits: $translated | Skips: $skip | Echecs: $fail"
+    fi
+}
+
+# ── Commande: auto (tout-en-un: download + translate + embed) ─────────────────
+cmd_auto() {
+    local target="$LANG_TARGET"
+    [[ -z "$target" ]] && die "Specifie --lang <langue_cible> (ex: fr)"
+
+    # Mode fichier unique ou dossier
+    local mode=""
+    if [[ -n "$FILE_PATH" ]]; then
+        [[ ! -f "$FILE_PATH" ]] && die "Fichier introuvable: $FILE_PATH"
+        mode="file"
+    elif [[ -n "$SCAN_DIR" ]]; then
+        [[ ! -d "$SCAN_DIR" ]] && die "Dossier introuvable: $SCAN_DIR"
+        mode="dir"
+    else
+        die "Specifie --file <video> ou --dir <dossier>"
+    fi
+
+    local title_override="${SEARCH_QUERY:-}"
+    local imdb_override="${IMDB_ID:-}"
+    local do_embed=$AUTO_EMBED
+
+    header "subtool auto"
+    info "Langue cible: $target"
+    $do_embed && info "Embed: actif"
+
+    local success=0 fail=0 skip=0 total=0
+
+    # Collect video files
+    local video_files=()
+    if [[ "$mode" == "file" ]]; then
+        video_files=("$FILE_PATH")
+    else
+        info "Dossier: $SCAN_DIR"
+        while IFS= read -r -d '' vf; do
+            video_files+=("$vf")
+        done < <(/usr/bin/find "$SCAN_DIR" -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" -o -iname "*.webm" -o -iname "*.m4v" -o -iname "*.mpg" -o -iname "*.mpeg" -o -iname "*.ts" \) -print0 2>/dev/null | sort -z)
+    fi
+
+    total=${#video_files[@]}
+    info "$total videos trouvees"
+
+    for video_file in "${video_files[@]}"; do
+        local dir_name base_name name_no_ext
+        dir_name=$(dirname "$video_file")
+        base_name=$(basename "$video_file")
+        name_no_ext="${base_name%.*}"
+
+        local target_srt="${dir_name}/${name_no_ext}.${target}.srt"
+
+        # Already has target language subtitle?
+        if [[ -f "$target_srt" ]]; then
+            info "Skip (${target}.srt existe): $base_name"
+            ((skip++)) || true
+            continue
+        fi
+
+        printf "\n${BOLD}── %s ──${NC}\n" "$base_name" >&2
+
+        # ── Step 1: Check for existing subtitle in any language ──
+        local existing_srt="" existing_lang=""
+        for srt_file in "${dir_name}/${name_no_ext}".*.srt; do
+            [[ -f "$srt_file" ]] || continue
+            # Extract lang code from filename (name.XX.srt)
+            local srt_base
+            srt_base=$(basename "$srt_file")
+            local srt_lang="${srt_base%.srt}"
+            srt_lang="${srt_lang##*.}"
+            if [[ -n "$srt_lang" && "$srt_lang" != "$target" && ${#srt_lang} -le 3 ]]; then
+                existing_srt="$srt_file"
+                existing_lang="$srt_lang"
+                break
+            fi
+        done
+
+        # ── Step 2: If no existing subtitle, try to download ──
+        if [[ -z "$existing_srt" ]]; then
+            # Parse filename for search
+            local clean_name="$name_no_ext"
+            clean_name=$(echo "$clean_name" | sed -E 's/\[[^]]*\]//g')
+            clean_name=$(echo "$clean_name" | sed -E 's/\([^)]*\)//g')
+            clean_name=$(echo "$clean_name" | sed -E 's/([Ss][0-9]+[Ee][0-9]+)[-. ].*/\1/')
+            clean_name=$(echo "$clean_name" | tr '.' ' ')
+            parse_smart_query "$clean_name"
+            [[ -n "$title_override" ]] && PARSED_TITLE="$title_override"
+            [[ -n "$imdb_override" ]] && PARSED_IMDB="$imdb_override"
+
+            if [[ -z "$PARSED_TITLE" && -z "$PARSED_IMDB" ]]; then
+                warn "Impossible de parser: $base_name"
+                ((fail++)) || true
+                continue
+            fi
+
+            # Try target language first
+            local results=""
+            if results=$(search_all_sources "$PARSED_TITLE" "$target" "$PARSED_IMDB" "$PARSED_SEASON" "$PARSED_EPISODE" 2>/dev/null); then
+                local first
+                first=$(echo "$results" | head -1)
+                if [[ -n "$first" ]] && download_subtitle "$first" "$target_srt" 2>/dev/null; then
+                    log "Telecharge (${target}): $target_srt"
+                    ((success++)) || true
+                    # No translation needed, already in target language
+                    if $do_embed && command -v ffmpeg &>/dev/null; then
+                        _auto_embed "$video_file" "$target_srt" "$target"
+                    fi
+                    continue
+                fi
+            fi
+
+            # Try all fallback languages
+            local fb_downloaded=false
+            IFS=',' read -ra fb_langs <<< "$FALLBACK_LANGS"
+            for fl in "${fb_langs[@]}"; do
+                fl=$(echo "$fl" | tr -d ' ')
+                [[ "$fl" == "$target" ]] && continue
+                local fb_results=""
+                if fb_results=$(search_all_sources "$PARSED_TITLE" "$fl" "$PARSED_IMDB" "$PARSED_SEASON" "$PARSED_EPISODE" 2>/dev/null); then
+                    local first
+                    first=$(echo "$fb_results" | head -1)
+                    local dl_path="${dir_name}/${name_no_ext}.${fl}.srt"
+                    if [[ -n "$first" ]] && download_subtitle "$first" "$dl_path" 2>/dev/null; then
+                        log "Telecharge ($fl): $(basename "$dl_path")"
+                        existing_srt="$dl_path"
+                        existing_lang="$fl"
+                        fb_downloaded=true
+                        break
+                    fi
+                fi
+            done
+
+            # Nothing found anywhere — prompt for URL in interactive mode
+            if [[ -z "$existing_srt" ]]; then
+                if [[ -t 0 ]] && ! $AUTO_SELECT; then
+                    warn "Aucun sous-titre trouve pour: $base_name"
+                    printf "  ${CYAN}Colle une URL opensubtitles.org (ou Enter pour skip):${NC} " >&2
+                    local user_url=""
+                    read -r user_url </dev/tty 2>/dev/null || true
+                    if [[ -n "$user_url" ]]; then
+                        local url_srt="${dir_name}/${name_no_ext}.dl.srt"
+                        if download_from_url "$user_url" "$url_srt"; then
+                            # Detect language of downloaded subtitle
+                            local detected_lang
+                            local sample
+                            sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$url_srt" | head -20 | tr '\n' ' ')
+                            detected_lang=$(detect_lang "$sample")
+                            [[ -z "$detected_lang" ]] && detected_lang="und"
+                            # Rename with detected language
+                            local proper_path="${dir_name}/${name_no_ext}.${detected_lang}.srt"
+                            mv "$url_srt" "$proper_path"
+                            existing_srt="$proper_path"
+                            existing_lang="$detected_lang"
+                            log "Telecharge via URL ($detected_lang): $(basename "$proper_path")"
+                        else
+                            warn "Echec telechargement URL"
+                        fi
+                    fi
+                fi
+            fi
+        fi
+
+        # ── Step 3: Translate if we have a subtitle in another language ──
+        if [[ -n "$existing_srt" && "$existing_lang" != "$target" ]]; then
+            info "Traduction: $existing_lang -> $target"
+            if translate_subtitle "$existing_srt" "$target_srt" "$existing_lang" "$target" "$AI_PROVIDER"; then
+                log "Traduit: $(basename "$target_srt")"
+                ((success++)) || true
+
+                # ── Step 4: Embed if requested ──
+                if $do_embed && command -v ffmpeg &>/dev/null; then
+                    _auto_embed "$video_file" "$target_srt" "$target"
+                fi
+                continue
+            else
+                warn "Echec traduction: $base_name"
+            fi
+        elif [[ -z "$existing_srt" ]]; then
+            warn "Aucun sous-titre pour: $base_name"
+        fi
+
+        if [[ ! -f "$target_srt" ]]; then
+            ((fail++)) || true
+        fi
+    done
+
+    printf "\n"
+    header "Resultat auto"
+    log "Total: $total | OK: $success | Skips: $skip | Echecs: $fail"
+}
+
+# Helper for auto-embed
+_auto_embed() {
+    local video="$1" sub="$2" lang="$3"
+    local vbase vext
+    vbase=$(basename "$video" | sed 's/\.[^.]*$//')
+    vext="${video##*.}"
+    local out_dir
+    out_dir=$(dirname "$video")
+    local out_video="${out_dir}/${vbase}.subbed.${vext}"
+    info "Embed: $(basename "$sub") -> $(basename "$out_video")"
+    ffmpeg -v quiet -i "$video" -i "$sub" \
+        -c copy -c:s srt \
+        -metadata:s:s:0 language="$lang" \
+        "$out_video" -y 2>/dev/null
+    if [[ -s "$out_video" ]]; then
+        log "Video avec sous-titres: $out_video"
+    else
+        warn "Echec embed: $(basename "$video")"
     fi
 }
 
@@ -2138,10 +2466,15 @@ cmd_autosync() {
     [[ ! -f "$FILE_PATH" ]] && die "Fichier introuvable: $FILE_PATH"
     [[ ! -f "$AUTOSYNC_REF" ]] && die "Reference introuvable: $AUTOSYNC_REF"
 
-    # Verifier ffsubsync
-    if ! python3 -c "import ffsubsync" 2>/dev/null; then
-        warn "ffsubsync non installe. Installation..."
-        pip3 install ffsubsync || die "Echec installation ffsubsync. Installe-le: pip3 install ffsubsync"
+    # Determiner la commande ffsubsync
+    local ffsubsync_cmd="ffsubsync"
+    if ! command -v ffsubsync &>/dev/null; then
+        if command -v uvx &>/dev/null; then
+            ffsubsync_cmd="uvx ffsubsync"
+            info "Utilisation de uvx ffsubsync (pas d'installation locale)"
+        else
+            die "ffsubsync non disponible. Installe-le: uvx ffsubsync (ou: uv tool install ffsubsync)"
+        fi
     fi
 
     local basename ext output
@@ -2170,7 +2503,7 @@ cmd_autosync() {
             ;;
     esac
 
-    if python3 -m ffsubsync "${ffsubsync_args[@]}" 2>&1; then
+    if $ffsubsync_cmd "${ffsubsync_args[@]}" 2>&1; then
         log "Sync automatique: $output"
     else
         err "Echec ffsubsync"
@@ -2190,7 +2523,7 @@ CONFIG_VALUE=""
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            get|search|translate|batch|scan|info|clean|sync|autosync|convert|merge|fix|extract|embed|providers|sources|check)
+            get|search|translate|batch|scan|auto|info|clean|sync|autosync|convert|merge|fix|extract|embed|providers|sources|check)
                 COMMAND="$1"; shift ;;
             config)
                 COMMAND="config"; shift
@@ -2222,6 +2555,8 @@ parse_args() {
             --ref)         AUTOSYNC_REF="$2"; shift 2 ;;
             --force-translate) FORCE_TRANSLATE=true; shift ;;
             --auto)        AUTO_SELECT=true; shift ;;
+            --embed)       AUTO_EMBED=true; shift ;;
+            --url)         SUBTITLE_URL="$2"; shift 2 ;;
             --dry-run)     DRY_RUN=true; shift ;;
             --json)        JSON_OUTPUT=true; QUIET=true; shift ;;
             --verbose)     VERBOSE=true; shift ;;
@@ -2256,6 +2591,7 @@ main() {
         translate) cmd_translate ;;
         batch)     cmd_batch ;;
         scan)      cmd_scan ;;
+        auto)      cmd_auto ;;
         info)      cmd_info ;;
         clean)     cmd_clean ;;
         sync)      cmd_sync ;;

@@ -4,8 +4,10 @@ All-in-one CLI for subtitle management: download, translate, convert, sync, clea
 
 ## Features
 
-- **Multi-source download** from OpenSubtitles, Podnapisi, and SubDL
-- **AI translation** with multiple providers (see below)
+- **Multi-source download** from OpenSubtitles.org and Podnapisi — no API keys needed
+- **Fast translation** with Google Translate (default, via [translate-shell](https://github.com/soimort/translate-shell)) — no API key needed
+- **AI translation** with Claude Code, OpenAI, Gemini, Mistral, etc.
+- **Auto mode** — one command: download + translate + embed (`subtool auto`)
 - **Smart parsing** — auto-detects movies, episodes, seasons, ranges, IMDb IDs
 - **Format conversion** between SRT, VTT, and ASS
 - **Subtitle tools**: info, clean, sync, fix, merge, extract, embed
@@ -34,46 +36,35 @@ sudo mv subtool /usr/local/bin/
 ### Dependencies
 
 - `jq` — JSON parsing
+- `curl` — HTTP requests
 - `ffmpeg` / `ffprobe` (optional) — extract/embed subtitles, video analysis
-- `ffsubsync` (optional) — auto-sync subtitles with video (`pip install ffsubsync`)
+- `ffsubsync` (optional) — auto-sync subtitles with video. Runs automatically via `uvx` if [uv](https://docs.astral.sh/uv/) is installed, or install permanently with `uv tool install ffsubsync`
 
-## AI Translation Providers
+## Translation Providers
 
-subtool supports two categories of AI providers:
+### Default: Google Translate (free, fast, no API key)
 
-### Code Plan providers (no classic API key needed)
+| Provider | ID | Description |
+|---|---|---|
+| **Google Translate** | `google` | Default. Uses [translate-shell](https://github.com/soimort/translate-shell) (`trans`). ~16s per episode, parallel chunks. |
 
-| Provider | ID | Default Model | Description |
-|---|---|---|---|
-| **Claude Code** | `claude-code` | *(uses Claude Code CLI)* | Default provider. Uses your local Claude Code installation — no API key required. |
-| **Z.ai Coding Plan** | `zai-codeplan` | `glm-4.7` | Uses Z.ai's Coding Plan API endpoint with GLM-4.7. Requires `ZAI_API_KEY`. |
-
-### Classic API key providers
+### AI providers (optional, for higher quality)
 
 | Provider | ID | Default Model | Description |
 |---|---|---|---|
+| **Claude Code** | `claude-code` | `haiku` | Claude Code CLI (effort low). No API key required. |
 | **OpenAI** | `openai` | `gpt-4o` | OpenAI Chat Completions API |
 | **Claude API** | `claude` | `claude-sonnet-4-20250514` | Anthropic Messages API |
 | **Mistral** | `mistral` | `mistral-large-latest` | Mistral AI API |
 | **Gemini** | `gemini` | `gemini-2.0-flash` | Google Gemini API |
 
-You can override the model for any provider with `-m / --model`:
-
 ```bash
-# Use a specific model
-subtool translate -f subs.srt -l fr -p openai -m gpt-4-turbo
-subtool translate -f subs.srt -l fr -p claude -m claude-opus-4-20250514
-subtool translate -f subs.srt -l fr -p gemini -m gemini-2.5-pro
-```
+# Default: Google Translate (fast)
+subtool translate -f subs.srt -l fr --from de
 
-Or set default models in `~/.config/subtool/config`:
-
-```bash
-MODEL_ZAI_CODEPLAN="glm-4.7"
-MODEL_OPENAI="gpt-4o"
-MODEL_CLAUDE="claude-sonnet-4-20250514"
-MODEL_MISTRAL="mistral-large-latest"
-MODEL_GEMINI="gemini-2.0-flash"
+# Use an AI provider for higher quality
+subtool translate -f subs.srt -l fr -p claude-code -m sonnet
+subtool translate -f subs.srt -l fr -p openai
 ```
 
 ## Usage
@@ -86,21 +77,22 @@ subtool get -q "Breaking Bad S05E14" -l en
 # Batch download a full season
 subtool batch -q "Dark S01" -l en
 
+# Auto mode: download + translate + optionally embed — one command
+subtool auto --dir ~/Movies/Die.Discounter -l fr               # translate existing subs
+subtool auto --dir ~/Movies/Die.Discounter -l fr --embed        # + embed into video
+subtool auto -f movie.mkv -l fr                                 # single file
+
 # Scan a folder and auto-download subtitles for all videos
 subtool scan --dir ~/Movies/Die.Discounter -l fr
 subtool scan --dir ~/Movies/Die.Discounter -l fr --dry-run          # preview only
 subtool scan --dir ~/Movies/Die.Discounter -l fr -q "Die Discounter" # override title
-subtool scan --dir ~/Movies/Die.Discounter -l fr -i tt16463942      # use IMDb ID
-subtool scan --dir ~/Movies/Die.Discounter -l fr --force-translate   # fallback + AI translate
 
 # Search without downloading
 subtool search -q "Parasite" -l en
 
-# Translate subtitles (default: claude-code)
-subtool translate -f subs.srt -l fr --from en
-subtool translate -f subs.srt -l fr -p zai-codeplan
-subtool translate -f subs.srt -l fr -p openai
-subtool translate -f subs.srt -l fr -p openai -m gpt-4-turbo
+# Translate subtitles (default: Google Translate — fast, free)
+subtool translate -f subs.srt -l fr --from de
+subtool translate -f subs.srt -l fr --from de -p claude-code    # use AI instead
 
 # Subtitle info
 subtool info -f subs.srt
@@ -169,19 +161,19 @@ subtool config set key value      # Set a config value
 subtool config get key            # Get a config value
 subtool providers                 # List AI providers and models
 subtool sources                   # List subtitle sources
-subtool check                     # Diagnostic: deps, API keys, paths
+subtool check                     # Diagnostic: deps, config
 ```
 
-API keys are stored in `~/.config/subtool/config`:
+subtool works out of the box — no API keys needed for downloading subtitles or for translation with `claude-code` (default provider).
+
+Optional API keys for other AI translation providers are stored in `~/.config/subtool/config`:
 
 ```
-OPENSUBTITLES_API_KEY="..."
-SUBDL_API_KEY="..."
-ZAI_API_KEY="..."
 OPENAI_API_KEY="..."
 ANTHROPIC_API_KEY="..."
 MISTRAL_API_KEY="..."
 GEMINI_API_KEY="..."
+ZAI_API_KEY="..."
 ```
 
 ## Smart Query Parsing
@@ -232,7 +224,7 @@ The `scan` command recursively finds video files in a directory and auto-downloa
 | `-i / --imdb <id>` | Use an IMDb ID for more accurate results |
 | `--force-translate` | If not found in target language, try fallback languages + AI translation |
 | `--dry-run` | Preview what would be downloaded without actually downloading |
-| `--sources` | Choose subtitle sources (default: `opensubtitles,podnapisi,subdl`) |
+| `--sources` | Choose subtitle sources (default: `opensubtitles-org,podnapisi`) |
 | `--fallback-langs` | Languages to try for fallback translation (default: `en,de,es,pt`) |
 
 **Tips:**
