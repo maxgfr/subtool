@@ -47,7 +47,7 @@ sudo mv subtool /usr/local/bin/
 
 | Provider | ID | Description |
 |---|---|---|
-| **Google Translate** | `google` | Default. Uses [translate-shell](https://github.com/soimort/translate-shell) (`trans`). ~16s per episode, parallel chunks. |
+| **Google Translate** | `google` | Default. Uses [translate-shell](https://github.com/soimort/translate-shell) (`trans`) |
 
 ### AI providers (optional, for higher quality)
 

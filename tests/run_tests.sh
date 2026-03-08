@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Test framework minimaliste ────────────────────────────────────────────────
+# ── Minimalist test framework ────────────────────────────────────────────────
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -87,50 +87,50 @@ section() {
 section "CLI basics"
 
 out=$("$SUBSYNC" --version 2>&1)
-assert_output_contains "--version affiche la version" "$out" '^[0-9]+\.[0-9]+\.[0-9]+'
+assert_output_contains "--version shows version" "$out" '^[0-9]+\.[0-9]+\.[0-9]+'
 
 out=$("$SUBSYNC" --help 2>&1)
-assert_output_contains "--help contient USAGE" "$out" "USAGE"
-assert_output_contains "--help contient COMMANDES" "$out" "COMMANDES"
-assert_output_contains "--help contient get" "$out" "get"
-assert_output_contains "--help contient translate" "$out" "translate"
-assert_output_contains "--help contient check" "$out" "check"
-assert_output_contains "--help contient --auto" "$out" "\-\-auto"
-assert_output_contains "--help contient --dry-run" "$out" "\-\-dry-run"
-assert_output_contains "--help contient --json" "$out" "\-\-json"
-assert_output_contains "--help contient --verbose" "$out" "\-\-verbose"
-assert_output_contains "--help contient --quiet" "$out" "\-\-quiet"
+assert_output_contains "--help contains USAGE" "$out" "USAGE"
+assert_output_contains "--help contains COMMANDS" "$out" "COMMANDS"
+assert_output_contains "--help contains get" "$out" "get"
+assert_output_contains "--help contains translate" "$out" "translate"
+assert_output_contains "--help contains check" "$out" "check"
+assert_output_contains "--help contains --auto" "$out" "\-\-auto"
+assert_output_contains "--help contains --dry-run" "$out" "\-\-dry-run"
+assert_output_contains "--help contains --json" "$out" "\-\-json"
+assert_output_contains "--help contains --verbose" "$out" "\-\-verbose"
+assert_output_contains "--help contains --quiet" "$out" "\-\-quiet"
 
 out=$("$SUBSYNC" providers 2>&1)
-assert_output_contains "providers liste claude-code" "$out" "claude-code"
-assert_output_contains "providers liste zai-codeplan" "$out" "zai-codeplan"
-assert_output_contains "providers liste openai" "$out" "openai"
-assert_output_contains "providers liste gemini" "$out" "gemini"
+assert_output_contains "providers lists claude-code" "$out" "claude-code"
+assert_output_contains "providers lists zai-codeplan" "$out" "zai-codeplan"
+assert_output_contains "providers lists openai" "$out" "openai"
+assert_output_contains "providers lists gemini" "$out" "gemini"
 
 out=$("$SUBSYNC" sources 2>&1)
-assert_output_contains "sources liste opensubtitles-org" "$out" "opensubtitles-org"
-assert_output_contains "sources liste podnapisi" "$out" "podnapisi"
+assert_output_contains "sources lists opensubtitles-org" "$out" "opensubtitles-org"
+assert_output_contains "sources lists podnapisi" "$out" "podnapisi"
 
-# Erreurs attendues
+# Expected errors
 out=$("$SUBSYNC" search 2>&1 || true)
-assert_output_contains "search sans args -> erreur" "$out" "Specifie"
+assert_output_contains "search without args -> error" "$out" "Specify"
 
 out=$("$SUBSYNC" translate 2>&1 || true)
-assert_output_contains "translate sans args -> erreur" "$out" "Specifie"
+assert_output_contains "translate without args -> error" "$out" "Specify"
 
 out=$("$SUBSYNC" get 2>&1 || true)
-assert_output_contains "get sans args -> erreur" "$out" "Specifie"
+assert_output_contains "get without args -> error" "$out" "Specify"
 
 out=$("$SUBSYNC" --nonexistent 2>&1 || true)
-assert_output_contains "option inconnue -> erreur" "$out" "inconnue"
+assert_output_contains "unknown option -> error" "$out" "Unknown"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "check (diagnostic)"
 
 out=$("$SUBSYNC" check 2>&1)
-assert_output_contains "check: affiche jq" "$out" "jq"
-assert_output_contains "check: affiche curl" "$out" "curl"
-assert_output_contains "check: affiche Config" "$out" "Config"
+assert_output_contains "check: shows jq" "$out" "jq"
+assert_output_contains "check: shows curl" "$out" "curl"
+assert_output_contains "check: shows Config" "$out" "Config"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "config set/get"
@@ -141,12 +141,12 @@ export XDG_CACHE_HOME="$TMP_DIR/xdg_cache"
 
 "$SUBSYNC" config set TEST_KEY "test_value_123" 2>&1
 out=$("$SUBSYNC" config get TEST_KEY 2>&1)
-assert_output_contains "config set/get: valeur correcte" "$out" "test_value_123"
+assert_output_contains "config set/get: correct value" "$out" "test_value_123"
 
 # Update existing key
 "$SUBSYNC" config set TEST_KEY "updated_value" 2>&1
 out=$("$SUBSYNC" config get TEST_KEY 2>&1)
-assert_output_contains "config set: update existant" "$out" "updated_value"
+assert_output_contains "config set: update existing" "$out" "updated_value"
 
 unset XDG_CONFIG_HOME XDG_CACHE_HOME
 
@@ -154,55 +154,55 @@ unset XDG_CONFIG_HOME XDG_CACHE_HOME
 section "info"
 
 out=$("$SUBSYNC" info -f "$FIXTURES/basic.srt" 2>&1)
-assert_output_contains "info: detecte 5 sous-titres" "$out" "5"
-assert_output_contains "info: detecte debut timestamp" "$out" "00:00:01,000"
-assert_output_contains "info: detecte fin timestamp" "$out" "00:00:18,500"
-assert_output_contains "info: detecte allemand" "$out" "de.*allemand"
+assert_output_contains "info: detects 5 subtitles" "$out" "5"
+assert_output_contains "info: detects start timestamp" "$out" "00:00:01,000"
+assert_output_contains "info: detects end timestamp" "$out" "00:00:18,500"
+assert_output_contains "info: detects German" "$out" "de.*German"
 
 out=$("$SUBSYNC" info -f "$FIXTURES/basic_fr.srt" 2>&1)
-assert_output_contains "info: detecte francais" "$out" "fr.*francais"
+assert_output_contains "info: detects French" "$out" "fr.*French"
 
 out=$("$SUBSYNC" info -f "$FIXTURES/clean.srt" 2>&1)
-assert_output_contains "info: detecte tags HI/SDH" "$out" "HI/SDH"
-assert_output_contains "info: detecte tags HTML" "$out" "HTML"
+assert_output_contains "info: detects HI/SDH tags" "$out" "HI/SDH"
+assert_output_contains "info: detects HTML tags" "$out" "HTML"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "clean"
 
 "$SUBSYNC" clean -f "$FIXTURES/clean.srt" -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/clean.clean.srt"
-assert_file_exists "clean: fichier cree" "$out_file"
-assert_file_not_contains "clean: HTML <i> supprime" "$out_file" '<i>'
-assert_file_not_contains "clean: HTML <b> supprime" "$out_file" '<b>'
-assert_file_not_contains "clean: HTML <font> supprime" "$out_file" '<font>'
-assert_file_not_contains "clean: opensubtitles supprime" "$out_file" 'opensubtitles'
-assert_file_not_contains "clean: synced by supprime" "$out_file" '[Ss]ynced by'
-assert_file_not_contains "clean: subtitle by supprime" "$out_file" '[Ss]ubtitle by'
-assert_file_contains "clean: vrai dialogue conserve" "$out_file" "echte Dialog"
+assert_file_exists "clean: file created" "$out_file"
+assert_file_not_contains "clean: HTML <i> removed" "$out_file" '<i>'
+assert_file_not_contains "clean: HTML <b> removed" "$out_file" '<b>'
+assert_file_not_contains "clean: HTML <font> removed" "$out_file" '<font>'
+assert_file_not_contains "clean: opensubtitles removed" "$out_file" 'opensubtitles'
+assert_file_not_contains "clean: synced by removed" "$out_file" '[Ss]ynced by'
+assert_file_not_contains "clean: subtitle by removed" "$out_file" '[Ss]ubtitle by'
+assert_file_contains "clean: real dialogue preserved" "$out_file" "echte Dialog"
 
 # Clean on already clean file
 section "clean (idempotent)"
 
 "$SUBSYNC" clean -f "$FIXTURES/already_clean.srt" -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/already_clean.clean.srt"
-assert_file_exists "clean idempotent: fichier cree" "$out_file"
-assert_file_contains "clean idempotent: dialogue 1 conserve" "$out_file" "Bonjour"
-assert_file_contains "clean idempotent: dialogue 2 conserve" "$out_file" "tres bien"
-assert_file_contains "clean idempotent: dialogue 3 conserve" "$out_file" "Au revoir"
+assert_file_exists "clean idempotent: file created" "$out_file"
+assert_file_contains "clean idempotent: dialogue 1 preserved" "$out_file" "Bonjour"
+assert_file_contains "clean idempotent: dialogue 2 preserved" "$out_file" "tres bien"
+assert_file_contains "clean idempotent: dialogue 3 preserved" "$out_file" "Au revoir"
 
 # Count subtitle blocks in cleaned file
 clean_blocks=$(grep -cE '^[0-9]+$' "$out_file" || true)
-assert_exit_code "clean idempotent: 3 blocs conserves" "3" "$clean_blocks"
+assert_exit_code "clean idempotent: 3 blocks preserved" "3" "$clean_blocks"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "sync"
 
 "$SUBSYNC" sync -f "$FIXTURES/basic.srt" --shift +2000 -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/basic.synced.srt"
-assert_file_exists "sync +2000ms: fichier cree" "$out_file"
+assert_file_exists "sync +2000ms: file created" "$out_file"
 assert_file_contains "sync +2000ms: 01,000 -> 03,000" "$out_file" "00:00:03,000"
 assert_file_contains "sync +2000ms: 03,500 -> 05,500" "$out_file" "00:00:05,500"
-assert_file_not_contains "sync +2000ms: ancien timestamp absent" "$out_file" "00:00:01,000"
+assert_file_not_contains "sync +2000ms: old timestamp absent" "$out_file" "00:00:01,000"
 
 "$SUBSYNC" sync -f "$FIXTURES/basic.srt" --shift -500 -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/basic.synced.srt"
@@ -214,47 +214,47 @@ section "convert SRT -> VTT"
 
 "$SUBSYNC" convert -f "$FIXTURES/basic.srt" --to vtt -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/basic.vtt"
-assert_file_exists "srt->vtt: fichier cree" "$out_file"
+assert_file_exists "srt->vtt: file created" "$out_file"
 assert_file_contains "srt->vtt: header WEBVTT" "$out_file" "^WEBVTT"
-assert_file_contains "srt->vtt: point au lieu de virgule" "$out_file" '00:00:01\.000'
-assert_file_not_contains "srt->vtt: pas de virgule dans timestamp" "$out_file" '00:00:01,000'
-assert_file_contains "srt->vtt: texte conserve" "$out_file" "Willkommen"
+assert_file_contains "srt->vtt: dot instead of comma" "$out_file" '00:00:01\.000'
+assert_file_not_contains "srt->vtt: no comma in timestamp" "$out_file" '00:00:01,000'
+assert_file_contains "srt->vtt: text preserved" "$out_file" "Willkommen"
 
 section "convert SRT -> ASS"
 
 "$SUBSYNC" convert -f "$FIXTURES/basic.srt" --to ass -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/basic.ass"
-assert_file_exists "srt->ass: fichier cree" "$out_file"
+assert_file_exists "srt->ass: file created" "$out_file"
 assert_file_contains "srt->ass: Script Info" "$out_file" "Script Info"
 assert_file_contains "srt->ass: V4+ Styles" "$out_file" "V4\+ Styles"
 assert_file_contains "srt->ass: Dialogue lines" "$out_file" "^Dialogue:"
-assert_file_contains "srt->ass: texte conserve" "$out_file" "Willkommen"
+assert_file_contains "srt->ass: text preserved" "$out_file" "Willkommen"
 assert_file_contains "srt->ass: multiline \\N" "$out_file" '\\N'
 
 section "convert ASS -> SRT"
 
 "$SUBSYNC" convert -f "$FIXTURES/sample.ass" --to srt -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/sample.srt"
-assert_file_exists "ass->srt: fichier cree" "$out_file"
+assert_file_exists "ass->srt: file created" "$out_file"
 assert_file_contains "ass->srt: timestamps SRT" "$out_file" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> '
-assert_file_contains "ass->srt: texte conserve" "$out_file" "Hello world"
-assert_file_not_contains "ass->srt: pas de Dialogue:" "$out_file" "^Dialogue:"
+assert_file_contains "ass->srt: text preserved" "$out_file" "Hello world"
+assert_file_not_contains "ass->srt: no Dialogue: lines" "$out_file" "^Dialogue:"
 
 section "convert VTT -> SRT"
 
 "$SUBSYNC" convert -f "$TMP_DIR/basic.vtt" --to srt -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/basic.srt"
-assert_file_exists "vtt->srt: fichier cree" "$out_file"
-assert_file_contains "vtt->srt: virgule dans timestamp" "$out_file" '00:00:01,000'
-assert_file_not_contains "vtt->srt: pas de WEBVTT" "$out_file" "WEBVTT"
+assert_file_exists "vtt->srt: file created" "$out_file"
+assert_file_contains "vtt->srt: comma in timestamp" "$out_file" '00:00:01,000'
+assert_file_not_contains "vtt->srt: no WEBVTT" "$out_file" "WEBVTT"
 
 section "convert VTT with cue settings -> SRT"
 
 "$SUBSYNC" convert -f "$FIXTURES/cue_settings.vtt" --to srt -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/cue_settings.srt"
-assert_file_exists "vtt+cue->srt: fichier cree" "$out_file"
-assert_file_contains "vtt+cue->srt: texte conserve" "$out_file" "Hello world"
-assert_file_contains "vtt+cue->srt: multiline conserve" "$out_file" "with two lines"
+assert_file_exists "vtt+cue->srt: file created" "$out_file"
+assert_file_contains "vtt+cue->srt: text preserved" "$out_file" "Hello world"
+assert_file_contains "vtt+cue->srt: multiline preserved" "$out_file" "with two lines"
 assert_file_contains "vtt+cue->srt: normal sub" "$out_file" "Normal subtitle"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -262,18 +262,18 @@ section "merge"
 
 "$SUBSYNC" merge -f "$FIXTURES/basic.srt" --merge-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/basic.dual.srt"
-assert_file_exists "merge: fichier cree" "$out_file"
-assert_file_contains "merge: texte principal (DE)" "$out_file" "Willkommen"
-assert_file_contains "merge: texte secondaire (FR) en italique" "$out_file" "<i>Bienvenue"
-assert_file_contains "merge: timestamps conserves" "$out_file" "00:00:01,000 --> 00:00:03,500"
+assert_file_exists "merge: file created" "$out_file"
+assert_file_contains "merge: primary text (DE)" "$out_file" "Willkommen"
+assert_file_contains "merge: secondary text (FR) in italics" "$out_file" "<i>Bienvenue"
+assert_file_contains "merge: timestamps preserved" "$out_file" "00:00:01,000 --> 00:00:03,500"
 
-# Verifier que chaque bloc a les deux langues
+# Verify each block has both languages
 block_count=$(grep -c "Willkommen\|Regale\|Pause\|Discounter\|Angebote" "$out_file" || true)
 fr_count=$(grep -c "Bienvenue\|rayons\|pause\|discounter\|offres" "$out_file" || true)
 if [[ "$block_count" -gt 0 && "$fr_count" -gt 0 ]]; then
-    assert "merge: les deux langues presentes" 0
+    assert "merge: both languages present" 0
 else
-    assert "merge: les deux langues presentes" 1
+    assert "merge: both languages present" 1
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -281,17 +281,17 @@ section "fix"
 
 "$SUBSYNC" fix -f "$FIXTURES/broken.srt" -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/broken.fixed.srt"
-assert_file_exists "fix: fichier cree" "$out_file"
+assert_file_exists "fix: file created" "$out_file"
 
-# Verifier renumerotation sequentielle (1, 2, 3...)
+# Verify sequential renumbering (1, 2, 3...)
 first_num=$(head -1 "$out_file")
-assert_exit_code "fix: premier bloc = 1" "1" "$first_num"
+assert_exit_code "fix: first block = 1" "1" "$first_num"
 
 # Verify blocks are sorted by timestamp (first block should have earliest timestamp)
 first_ts=$(grep -m1 -oE '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}' "$out_file" | head -1)
-assert_exit_code "fix: premier timestamp = 00:00:01,000 (tri)" "00:00:01,000" "$first_ts"
+assert_exit_code "fix: first timestamp = 00:00:01,000 (sorted)" "00:00:01,000" "$first_ts"
 
-# Verifier que les chevauchements sont corriges
+# Verify overlaps are fixed
 overlap_check=$(awk '
 function ts2ms(ts,    a, b) {
     split(ts, a, ":"); split(a[3], b, ",")
@@ -305,14 +305,14 @@ function ts2ms(ts,    a, b) {
 }
 END { print 0 }
 ' "$out_file" 2>/dev/null)
-assert "fix: pas de chevauchement apres fix" "$overlap_check"
+assert "fix: no overlap after fix" "$overlap_check"
 
-# Verifier encodage UTF-8
+# Verify UTF-8 encoding
 encoding=$(file --mime-encoding "$out_file" 2>/dev/null | awk -F': ' '{print $2}')
 if [[ "$encoding" == "utf-8" || "$encoding" == "us-ascii" ]]; then
-    assert "fix: encodage UTF-8" 0
+    assert "fix: UTF-8 encoding" 0
 else
-    assert "fix: encodage UTF-8" 1
+    assert "fix: UTF-8 encoding" 1
 fi
 
 # Fix with Latin-1 encoded file
@@ -320,19 +320,19 @@ section "fix (Latin-1 encoding)"
 
 "$SUBSYNC" fix -f "$FIXTURES/latin1.srt" -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/latin1.fixed.srt"
-assert_file_exists "fix latin1: fichier cree" "$out_file"
+assert_file_exists "fix latin1: file created" "$out_file"
 fix_encoding=$(file --mime-encoding "$out_file" 2>/dev/null | awk -F': ' '{print $2}')
 if [[ "$fix_encoding" == "utf-8" || "$fix_encoding" == "us-ascii" ]]; then
-    assert "fix latin1: converti en UTF-8" 0
+    assert "fix latin1: converted to UTF-8" 0
 else
-    assert "fix latin1: converti en UTF-8 (got: $fix_encoding)" 1
+    assert "fix latin1: converted to UTF-8 (got: $fix_encoding)" 1
 fi
-assert_file_contains "fix latin1: texte conserve" "$out_file" "Deutschland"
+assert_file_contains "fix latin1: text preserved" "$out_file" "Deutschland"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "Smart parsing (get)"
 
-# Fonction helper pour tester le parsing sans reseau
+# Helper function to test parsing without network
 test_parse() {
     local query="$1" expected_mode="$2" expected_title="${3:-}" expected_season="${4:-}" expected_ep="${5:-}" expected_ep_end="${6:-}" expected_imdb="${7:-}"
     local out
@@ -343,11 +343,11 @@ test_parse() {
     if ! echo "$out" | grep -qi "Mode:.*$expected_mode"; then
         ok=false; desc+=" [mode=$expected_mode FAIL]"
     fi
-    if [[ -n "$expected_title" ]] && ! echo "$out" | grep -q "Titre: $expected_title"; then
-        ok=false; desc+=" [titre FAIL]"
+    if [[ -n "$expected_title" ]] && ! echo "$out" | grep -q "Title: $expected_title"; then
+        ok=false; desc+=" [title FAIL]"
     fi
-    if [[ -n "$expected_season" ]] && ! echo "$out" | grep -q "Saison: $expected_season"; then
-        ok=false; desc+=" [saison FAIL]"
+    if [[ -n "$expected_season" ]] && ! echo "$out" | grep -q "Season: $expected_season"; then
+        ok=false; desc+=" [season FAIL]"
     fi
     if [[ -n "$expected_ep" && "$expected_mode" != "Range" ]] && ! echo "$out" | grep -q "Episode: $expected_ep"; then
         ok=false; desc+=" [episode FAIL]"
@@ -364,18 +364,18 @@ test_parse() {
 
 #                           query                          mode       title               season  ep  ep_end  imdb
 test_parse "Die Discounter S01E03"                        "Episode"  "Die Discounter"     "1"     "3"
-test_parse "Die Discounter S01"                           "Saison"   "Die Discounter"     "1"
+test_parse "Die Discounter S01"                           "Season"   "Die Discounter"     "1"
 test_parse "Die Discounter S01E03-E08"                    "Range"    "Die Discounter"     "1"     "3" "8"
 test_parse "Die Discounter S2E10"                         "Episode"  "Die Discounter"     "2"     "10"
-test_parse "Inception 2010"                               "Film"     "Inception"
+test_parse "Inception 2010"                               "Movie"    "Inception"
 test_parse "Die Discounter 1x05"                          "Episode"  "Die Discounter"     "1"     "05"
-test_parse "Die Discounter saison 2"                      "Saison"   "Die Discounter"     "2"
+test_parse "Die Discounter saison 2"                      "Season"   "Die Discounter"     "2"
 test_parse "Die Discounter season 1 ep 5"                 "Episode"  "Die Discounter"     "1"     "5"
 test_parse "Breaking Bad S05E14-E16"                      "Range"    "Breaking Bad"       "5"     "14" "16"
 test_parse "tt16463942 S01E01"                            "Episode"  ""                   "1"     "1"  ""   "tt16463942"
-test_parse "tt16463942"                                   "Film"     ""                   ""      ""   ""   "tt16463942"
-test_parse "The Office S03"                               "Saison"   "The Office"         "3"
-test_parse "Parasite"                                     "Film"     "Parasite"
+test_parse "tt16463942"                                   "Movie"    ""                   ""      ""   ""   "tt16463942"
+test_parse "The Office S03"                               "Season"   "The Office"         "3"
+test_parse "Parasite"                                     "Movie"    "Parasite"
 test_parse "Dark S01E01-E10"                              "Range"    "Dark"               "1"     "1"  "10"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -418,9 +418,9 @@ chmod +x "$TMP_DIR/test_chunk.sh"
 # Large file with max_lines=10 should produce multiple chunks
 num_chunks=$(bash "$TMP_DIR/test_chunk.sh" "$chunk_cache" "$FIXTURES/large.srt" 10 2>/dev/null || echo "0")
 if [[ "$num_chunks" -gt 1 ]]; then
-    assert "chunk_srt: multiple chunks crees ($num_chunks)" 0
+    assert "chunk_srt: multiple chunks created ($num_chunks)" 0
 else
-    assert "chunk_srt: multiple chunks crees (got: $num_chunks)" 1
+    assert "chunk_srt: multiple chunks created (got: $num_chunks)" 1
 fi
 
 # Verify all chunks contain valid SRT timestamps
@@ -433,9 +433,9 @@ for f in "$chunk_cache"/chunk_*.srt; do
     fi
 done
 if $all_valid && [[ -f "$chunk_cache/chunk_0.srt" ]]; then
-    assert "chunk_srt: tous les chunks contiennent des timestamps" 0
+    assert "chunk_srt: all chunks contain timestamps" 0
 else
-    assert "chunk_srt: tous les chunks contiennent des timestamps" 1
+    assert "chunk_srt: all chunks contain timestamps" 1
 fi
 rm -rf "$chunk_cache"
 
@@ -443,7 +443,7 @@ rm -rf "$chunk_cache"
 chunk_cache2="$TMP_DIR/chunk_cache2"
 mkdir -p "$chunk_cache2"
 num_chunks_small=$(bash "$TMP_DIR/test_chunk.sh" "$chunk_cache2" "$FIXTURES/basic.srt" 200 2>/dev/null || echo "0")
-assert_exit_code "chunk_srt: petit fichier = 1 chunk" "1" "$num_chunks_small"
+assert_exit_code "chunk_srt: small file = 1 chunk" "1" "$num_chunks_small"
 rm -rf "$chunk_cache2"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -451,24 +451,24 @@ section "validate_srt"
 
 # Valid SRT
 if grep -qE '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> ' "$FIXTURES/basic.srt" && grep -qE '^[0-9]+$' "$FIXTURES/basic.srt"; then
-    assert "validate: basic.srt est valide" 0
+    assert "validate: basic.srt is valid" 0
 else
-    assert "validate: basic.srt est valide" 1
+    assert "validate: basic.srt is valid" 1
 fi
 
 # Invalid file (no timestamps)
 echo "This is not a subtitle file." > "$TMP_DIR/invalid.srt"
 if grep -qE '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> ' "$TMP_DIR/invalid.srt" 2>/dev/null; then
-    assert "validate: invalid.srt detecte comme invalide" 1
+    assert "validate: invalid.srt detected as invalid" 1
 else
-    assert "validate: invalid.srt detecte comme invalide" 0
+    assert "validate: invalid.srt detected as invalid" 0
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "extract (ffmpeg)"
 
 if command -v ffmpeg &>/dev/null; then
-    # Creer une video de test avec sous-titres embedded
+    # Create a test video with embedded subtitles
     test_video="$TMP_DIR/test_video.mkv"
     ffmpeg -v quiet -f lavfi -i "color=black:s=320x240:d=5" \
         -i "$FIXTURES/basic.srt" \
@@ -479,92 +479,92 @@ if command -v ffmpeg &>/dev/null; then
     if [[ -f "$test_video" ]]; then
         out=$("$SUBSYNC" extract -f "$test_video" --track 0 -o "$TMP_DIR" 2>&1)
         extract_file=$(find "$TMP_DIR" -name "test_video.*.srt" | head -1)
-        assert_file_exists "extract: sous-titres extraits" "${extract_file:-/nonexistent}"
+        assert_file_exists "extract: subtitles extracted" "${extract_file:-/nonexistent}"
         if [[ -n "$extract_file" ]]; then
-            assert_file_contains "extract: contenu correct" "$extract_file" "Willkommen"
+            assert_file_contains "extract: correct content" "$extract_file" "Willkommen"
         fi
     else
-        assert "extract: video de test creee" 1
+        assert "extract: test video created" 1
     fi
 
     # Test embed
     section "embed (ffmpeg)"
     embed_out="$TMP_DIR/test_video.subbed.mkv"
     "$SUBSYNC" embed -f "$test_video" --sub "$FIXTURES/basic_fr.srt" -l fr -o "$TMP_DIR" 2>&1
-    assert_file_exists "embed: video avec subs creee" "$embed_out"
+    assert_file_exists "embed: video with subs created" "$embed_out"
 
     if [[ -f "$embed_out" ]]; then
-        # Verifier que la video a des sous-titres
+        # Verify video has subtitles
         sub_count=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$embed_out" 2>/dev/null | jq '.streams | length' 2>/dev/null || echo 0)
         if [[ "$sub_count" -gt 0 ]]; then
-            assert "embed: video contient des sous-titres" 0
+            assert "embed: video contains subtitles" 0
         else
-            assert "embed: video contient des sous-titres" 1
+            assert "embed: video contains subtitles" 1
         fi
     fi
 else
-    printf "  ${YELLOW}SKIP${NC}  extract/embed: ffmpeg non disponible\n"
+    printf "  ${YELLOW}SKIP${NC}  extract/embed: ffmpeg not available\n"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-section "translate (API - optionnel)"
+section "translate (API - optional)"
 
 if [[ -n "${ZAI_API_KEY:-}" ]]; then
     "$SUBSYNC" translate -f "$FIXTURES/basic.srt" -l fr --from de -p zai-codeplan -o "$TMP_DIR" 2>&1
     out_file="$TMP_DIR/basic.fr.srt"
-    assert_file_exists "translate zai-codeplan: fichier cree" "$out_file"
-    assert_file_contains "translate zai-codeplan: contient timestamps" "$out_file" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
-    # Verifier que c'est bien du francais
+    assert_file_exists "translate zai-codeplan: file created" "$out_file"
+    assert_file_contains "translate zai-codeplan: contains timestamps" "$out_file" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
+    # Verify it's actually French
     sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$out_file" | head -5 | tr '\n' ' ')
     if echo "$sample" | grep -qiE '\b(le|la|les|des|est|une|que|pas|avec|dans|chez|ici)\b'; then
-        assert "translate zai-codeplan: resultat en francais" 0
+        assert "translate zai-codeplan: result in French" 0
     else
-        assert "translate zai-codeplan: resultat en francais" 1
+        assert "translate zai-codeplan: result in French" 1
     fi
 
-    # Verifier que le nombre de blocs est conserve
+    # Verify block count is preserved
     src_blocks=$(grep -cE '^[0-9]+$' "$FIXTURES/basic.srt" || true)
     dst_blocks=$(grep -cE '^[0-9]+$' "$out_file" || true)
     if [[ "$src_blocks" -eq "$dst_blocks" ]]; then
-        assert "translate zai-codeplan: meme nombre de blocs ($src_blocks)" 0
+        assert "translate zai-codeplan: same block count ($src_blocks)" 0
     else
-        assert "translate zai-codeplan: meme nombre de blocs (src=$src_blocks dst=$dst_blocks)" 1
+        assert "translate zai-codeplan: same block count (src=$src_blocks dst=$dst_blocks)" 1
     fi
 else
-    printf "  ${YELLOW}SKIP${NC}  translate zai-codeplan: ZAI_API_KEY non definie\n"
+    printf "  ${YELLOW}SKIP${NC}  translate zai-codeplan: ZAI_API_KEY not set\n"
 fi
 
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     "$SUBSYNC" translate -f "$FIXTURES/basic.srt" -l en --from de -p openai -o "$TMP_DIR" 2>&1
     out_file="$TMP_DIR/basic.en.srt"
-    assert_file_exists "translate openai: fichier cree" "$out_file"
-    assert_file_contains "translate openai: contient timestamps" "$out_file" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
+    assert_file_exists "translate openai: file created" "$out_file"
+    assert_file_contains "translate openai: contains timestamps" "$out_file" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
 else
-    printf "  ${YELLOW}SKIP${NC}  translate openai: OPENAI_API_KEY non definie\n"
+    printf "  ${YELLOW}SKIP${NC}  translate openai: OPENAI_API_KEY not set\n"
 fi
 
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
     "$SUBSYNC" translate -f "$FIXTURES/basic.srt" -l en --from de -p claude -o "$TMP_DIR" 2>&1
     out_file="$TMP_DIR/basic.en.srt"
-    assert_file_exists "translate claude: fichier cree" "$out_file"
+    assert_file_exists "translate claude: file created" "$out_file"
 else
-    printf "  ${YELLOW}SKIP${NC}  translate claude: ANTHROPIC_API_KEY non definie\n"
+    printf "  ${YELLOW}SKIP${NC}  translate claude: ANTHROPIC_API_KEY not set\n"
 fi
 
 if [[ -n "${MISTRAL_API_KEY:-}" ]]; then
     "$SUBSYNC" translate -f "$FIXTURES/basic.srt" -l en --from de -p mistral -o "$TMP_DIR" 2>&1
     out_file="$TMP_DIR/basic.en.srt"
-    assert_file_exists "translate mistral: fichier cree" "$out_file"
+    assert_file_exists "translate mistral: file created" "$out_file"
 else
-    printf "  ${YELLOW}SKIP${NC}  translate mistral: MISTRAL_API_KEY non definie\n"
+    printf "  ${YELLOW}SKIP${NC}  translate mistral: MISTRAL_API_KEY not set\n"
 fi
 
 if [[ -n "${GEMINI_API_KEY:-}" ]]; then
     "$SUBSYNC" translate -f "$FIXTURES/basic.srt" -l en --from de -p gemini -o "$TMP_DIR" 2>&1
     out_file="$TMP_DIR/basic.en.srt"
-    assert_file_exists "translate gemini: fichier cree" "$out_file"
+    assert_file_exists "translate gemini: file created" "$out_file"
 else
-    printf "  ${YELLOW}SKIP${NC}  translate gemini: GEMINI_API_KEY non definie\n"
+    printf "  ${YELLOW}SKIP${NC}  translate gemini: GEMINI_API_KEY not set\n"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -572,13 +572,13 @@ section "translate (auto-detect source lang)"
 
 # Without --from, should auto-detect
 out=$("$SUBSYNC" translate -f /nonexistent.srt -l fr 2>&1 || true)
-assert_output_contains "translate sans --from: accepte (erreur fichier, pas erreur lang)" "$out" "introuvable"
+assert_output_contains "translate without --from: accepted (file error, not lang error)" "$out" "not found"
 
 # ══════════════════════════════════════════════════════════════════════════════
-section "search (API - optionnel)"
+section "search (API - optional)"
 
 out=$("$SUBSYNC" search -q "Inception" -l en --sources opensubtitles-org --dry-run 2>&1 </dev/null || true)
-assert_output_contains "search opensubtitles-org: resultats" "$out" "Sous-titres trouves|Recherche sur"
+assert_output_contains "search opensubtitles-org: results" "$out" "Subtitles found|Searching on"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "Flags: --quiet, --verbose"
@@ -586,133 +586,133 @@ section "Flags: --quiet, --verbose"
 out=$("$SUBSYNC" info -f "$FIXTURES/basic.srt" --quiet 2>&1)
 # In quiet mode, info/header/log calls should be suppressed, but data should still output
 if [[ -z "$out" ]] || ! echo "$out" | grep -q "Info:"; then
-    assert "quiet: header supprime" 0
+    assert "quiet: header suppressed" 0
 else
-    assert "quiet: header supprime" 1
+    assert "quiet: header suppressed" 1
 fi
 
 out=$("$SUBSYNC" --version --verbose 2>&1)
 assert_output_contains "verbose: version still works" "$out" '^[0-9]+\.[0-9]+\.[0-9]+'
 
 # ══════════════════════════════════════════════════════════════════════════════
-section "Cas limites"
+section "Edge cases"
 
-# sync avec shift negatif qui irait sous zero
+# sync with negative shift that would go below zero
 "$SUBSYNC" sync -f "$FIXTURES/basic.srt" --shift -5000 -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/basic.synced.srt"
-assert_file_contains "sync negatif: pas de timestamp negatif" "$out_file" "00:00:00,000"
-assert_file_not_contains "sync negatif: pas de timestamp -" "$out_file" "^-"
+assert_file_contains "sync negative: no negative timestamp" "$out_file" "00:00:00,000"
+assert_file_not_contains "sync negative: no timestamp -" "$out_file" "^-"
 
 # convert roundtrip SRT -> VTT -> SRT
 "$SUBSYNC" convert -f "$FIXTURES/basic.srt" --to vtt -o "$TMP_DIR" 2>&1
 "$SUBSYNC" convert -f "$TMP_DIR/basic.vtt" --to srt -o "$TMP_DIR" 2>&1
 roundtrip="$TMP_DIR/basic.srt"
 assert_file_contains "roundtrip srt->vtt->srt: timestamps OK" "$roundtrip" "00:00:01,000"
-assert_file_contains "roundtrip srt->vtt->srt: texte OK" "$roundtrip" "Willkommen"
+assert_file_contains "roundtrip srt->vtt->srt: text OK" "$roundtrip" "Willkommen"
 
 # convert roundtrip SRT -> ASS -> SRT
 "$SUBSYNC" convert -f "$FIXTURES/basic.srt" --to ass -o "$TMP_DIR" 2>&1
 "$SUBSYNC" convert -f "$TMP_DIR/basic.ass" --to srt -o "$TMP_DIR" 2>&1
 roundtrip="$TMP_DIR/basic.srt"
-assert_file_contains "roundtrip srt->ass->srt: texte OK" "$roundtrip" "Willkommen"
+assert_file_contains "roundtrip srt->ass->srt: text OK" "$roundtrip" "Willkommen"
 
-# info sur fichier inexistant
+# info on non-existent file
 out=$("$SUBSYNC" info -f /nonexistent/file.srt 2>&1 || true)
-assert_output_contains "info fichier inexistant: erreur" "$out" "introuvable"
+assert_output_contains "info non-existent file: error" "$out" "not found"
 
-# translate sans --from (defaut en)
+# translate without --from (default en)
 # Just test that parse works, don't need actual translation
 out=$("$SUBSYNC" translate -f /nonexistent.srt -l fr 2>&1 || true)
-assert_output_contains "translate fichier inexistant: erreur" "$out" "introuvable"
+assert_output_contains "translate non-existent file: error" "$out" "not found"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "autosync"
 
-# autosync sans args -> erreur
+# autosync without args -> error
 out=$("$SUBSYNC" autosync 2>&1 || true)
-assert_output_contains "autosync sans --file -> erreur" "$out" "Specifie.*--file"
+assert_output_contains "autosync without --file -> error" "$out" "Specify.*--file"
 
-# autosync sans --ref -> erreur
+# autosync without --ref -> error
 out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" 2>&1 || true)
-assert_output_contains "autosync sans --ref -> erreur" "$out" "Specifie.*--ref"
+assert_output_contains "autosync without --ref -> error" "$out" "Specify.*--ref"
 
-# autosync fichier inexistant -> erreur
+# autosync non-existent file -> error
 out=$("$SUBSYNC" autosync -f /nonexistent.srt --ref /nonexistent.mkv 2>&1 || true)
-assert_output_contains "autosync fichier inexistant -> erreur" "$out" "introuvable"
+assert_output_contains "autosync non-existent file -> error" "$out" "not found"
 
-# autosync sans ffsubsync -> message uvx ou fallback uvx
+# autosync without ffsubsync -> uvx message or fallback uvx
 if ! command -v ffsubsync &>/dev/null && ! command -v uvx &>/dev/null; then
     out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 || true)
-    assert_output_contains "autosync sans ffsubsync ni uvx -> erreur" "$out" "uvx ffsubsync|uv tool install"
+    assert_output_contains "autosync without ffsubsync or uvx -> error" "$out" "uvx ffsubsync|uv tool install"
 elif ! command -v ffsubsync &>/dev/null && command -v uvx &>/dev/null; then
     out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 || true)
-    assert_output_contains "autosync via uvx: fallback detecte" "$out" "uvx"
+    assert_output_contains "autosync via uvx: fallback detected" "$out" "uvx"
 else
-    printf "  ${YELLOW}SKIP${NC}  autosync sans ffsubsync: ffsubsync est installe\n"
+    printf "  ${YELLOW}SKIP${NC}  autosync without ffsubsync: ffsubsync is installed\n"
 fi
 
-# autosync avec ffsubsync installe (test fonctionnel)
+# autosync with ffsubsync installed (functional test)
 if command -v ffsubsync &>/dev/null; then
     "$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1
     autosync_out="$TMP_DIR/basic.synced.srt"
-    assert_file_exists "autosync srt<->srt: fichier cree" "$autosync_out"
-    assert_file_contains "autosync srt<->srt: timestamps valides" "$autosync_out" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
-    assert_file_contains "autosync srt<->srt: texte conserve" "$autosync_out" "Willkommen"
+    assert_file_exists "autosync srt<->srt: file created" "$autosync_out"
+    assert_file_contains "autosync srt<->srt: valid timestamps" "$autosync_out" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
+    assert_file_contains "autosync srt<->srt: text preserved" "$autosync_out" "Willkommen"
 else
-    printf "  ${YELLOW}SKIP${NC}  autosync fonctionnel: ffsubsync non disponible\n"
+    printf "  ${YELLOW}SKIP${NC}  autosync functional: ffsubsync not available\n"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "scan"
 
-# scan sans args -> erreur
+# scan without args -> error
 out=$("$SUBSYNC" scan 2>&1 || true)
-assert_output_contains "scan sans --dir -> erreur" "$out" "Specifie.*--dir"
+assert_output_contains "scan without --dir -> error" "$out" "Specify.*--dir"
 
-# scan dossier inexistant -> erreur
+# scan non-existent directory -> error
 out=$("$SUBSYNC" scan --dir /nonexistent_dir -l fr 2>&1 || true)
-assert_output_contains "scan dossier inexistant -> erreur" "$out" "introuvable"
+assert_output_contains "scan non-existent dir -> error" "$out" "not found"
 
-# scan sans --lang -> erreur
+# scan without --lang -> error
 out=$("$SUBSYNC" scan --dir "$TMP_DIR" 2>&1 || true)
-assert_output_contains "scan sans --lang -> erreur" "$out" "Specifie.*--lang"
+assert_output_contains "scan without --lang -> error" "$out" "Specify.*--lang"
 
-# scan dossier vide (pas de videos) -> dry-run
+# scan empty directory (no videos) -> dry-run
 scan_dir="$TMP_DIR/scan_empty"
 mkdir -p "$scan_dir"
 out=$("$SUBSYNC" scan --dir "$scan_dir" -l fr --dry-run 2>&1 || true)
-assert_output_contains "scan dossier vide: scan header" "$out" "scan"
+assert_output_contains "scan empty dir: scan header" "$out" "scan"
 
-# scan dossier avec faux fichier video (dry-run, pas de reseau)
+# scan directory with fake video file (dry-run, no network)
 scan_dir2="$TMP_DIR/scan_videos"
 mkdir -p "$scan_dir2"
 touch "$scan_dir2/My.Movie.2024.mkv"
 touch "$scan_dir2/My.Movie.2024.fr.srt"  # already has subtitle
 out=$("$SUBSYNC" scan --dir "$scan_dir2" -l fr --dry-run 2>&1 || true)
-assert_output_contains "scan avec sub existant: skip detecte" "$out" "Skip.*existe"
+assert_output_contains "scan with existing sub: skip detected" "$out" "Skip.*already"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "check (ffsubsync detection)"
 
 out=$("$SUBSYNC" check 2>&1)
-assert_output_contains "check: affiche ffsubsync" "$out" "ffsubsync"
+assert_output_contains "check: shows ffsubsync" "$out" "ffsubsync"
 if command -v ffsubsync &>/dev/null; then
-    assert_output_contains "check: ffsubsync OK (installe)" "$out" "OK.*ffsubsync"
+    assert_output_contains "check: ffsubsync OK (installed)" "$out" "OK.*ffsubsync"
 elif command -v uvx &>/dev/null; then
     assert_output_contains "check: ffsubsync OK (via uvx)" "$out" "via uvx"
 else
-    assert_output_contains "check: ffsubsync N/A avec hint uvx" "$out" "uvx ffsubsync|uv tool install"
+    assert_output_contains "check: ffsubsync N/A with uvx hint" "$out" "uvx ffsubsync|uv tool install"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RESULTATS
+# RESULTS
 # ══════════════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}══════════════════════════════════════════${NC}\n"
-printf "${BOLD}  Resultats: %d tests${NC}\n" "$TESTS_RUN"
+printf "${BOLD}  Results: %d tests${NC}\n" "$TESTS_RUN"
 printf "  ${GREEN}Passed: %d${NC}\n" "$TESTS_PASSED"
 if [[ "$TESTS_FAILED" -gt 0 ]]; then
     printf "  ${RED}Failed: %d${NC}\n" "$TESTS_FAILED"
-    printf "\n${RED}Echecs:${NC}\n"
+    printf "\n${RED}Failures:${NC}\n"
     printf "%b" "$FAILURES"
     printf "${BOLD}══════════════════════════════════════════${NC}\n"
     exit 1

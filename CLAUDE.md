@@ -24,7 +24,7 @@ Search flow: `search_all_sources()` → iterates `SOURCES` (comma-separated) →
 
 ### Translation Providers
 
-- `google` (default) — uses `translate-shell` (`trans`), Google Translate, no API key. Parallel chunks (80 lines, 8 workers). ~16s/episode.
+- `google` (default) — uses `translate-shell` (`trans`), Google Translate, no API key. Parallel chunks.
 - `claude-code` — calls `claude -p` CLI (haiku, effort low), no API key needed
 - `zai-codeplan` — Z.ai Coding Plan API
 - `openai`, `claude`, `mistral`, `gemini` — standard chat APIs
