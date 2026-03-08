@@ -30,6 +30,7 @@ AI_MODEL=""
 AUTO_SELECT=false
 AUTO_EMBED=false
 NO_EMBED=false
+FORCE_EMBED=true
 DRY_RUN=false
 JSON_OUTPUT=false
 VERBOSE=false
@@ -1036,6 +1037,7 @@ ${BOLD}OPTIONS${NC}
     --url <url>               Download a subtitle from an opensubtitles.org URL
     --embed                   Embed subtitles in video (auto: active by default)
     --no-embed                Disable automatic embedding
+    --force-embed             Force embed even if subtitles already present (adds new track)
     --force-translate         Force translation even if subtitles found
     --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
     --auto                    Automatically select most downloaded result
@@ -2075,10 +2077,10 @@ _auto_sync() {
 # Helper for auto-embed (embed srt into video, replace original)
 _auto_embed() {
     local video="$1" sub="$2" lang="$3"
-    # Skip if video already has a subtitle stream
+    # Skip if video already has a subtitle stream (unless --force-embed)
     local existing_subs
     existing_subs=$(ffprobe -v quiet -select_streams s -show_entries stream=index -of csv=p=0 "$video" 2>/dev/null || true)
-    if [[ -n "$existing_subs" ]]; then
+    if [[ -n "$existing_subs" ]] && ! $FORCE_EMBED; then
         info "Embed skip (subtitles already present): $(basename "$video")"
         return 0
     fi
@@ -2090,9 +2092,14 @@ _auto_embed() {
         mp4|m4v|mov) sub_codec="mov_text" ;;
     esac
     info "Embed: $(basename "$sub") -> $(basename "$video") (codec: $sub_codec)"
+    # Count existing subtitle streams to set metadata on the correct index
+    local sub_count=0
+    if [[ -n "$existing_subs" ]]; then
+        sub_count=$(echo "$existing_subs" | wc -l | tr -d ' ')
+    fi
     if ffmpeg -v quiet -i "$video" -i "$sub" \
-        -c copy -c:s "$sub_codec" \
-        -metadata:s:s:0 language="$lang" \
+        -map 0 -map 1:0 -c copy -c:s:"$sub_count" "$sub_codec" \
+        -metadata:s:s:"$sub_count" language="$lang" \
         "$tmp_video" -y 2>/dev/null && [[ -s "$tmp_video" ]]; then
         mv "$tmp_video" "$video"
         log "Embed OK: $(basename "$video")"
@@ -2794,6 +2801,7 @@ parse_args() {
             --auto)        AUTO_SELECT=true; shift ;;
             --embed)       AUTO_EMBED=true; shift ;;
             --no-embed)    NO_EMBED=true; shift ;;
+            --force-embed) FORCE_EMBED=true; AUTO_EMBED=true; shift ;;
             --url)         SUBTITLE_URL="$2"; shift 2 ;;
             --dry-run)     DRY_RUN=true; shift ;;
             --json)        JSON_OUTPUT=true; QUIET=true; shift ;;
