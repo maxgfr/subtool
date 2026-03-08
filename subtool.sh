@@ -1805,7 +1805,11 @@ cmd_auto() {
     header "subtool auto"
     info "Target language: $target"
     $do_embed && info "Embed: active" || info "Embed: inactive (ffmpeg required)"
-    $KEEP_FILES && info "Keep files: active" || $do_embed && info "Cleanup: SRT files removed after embed"
+    if $KEEP_FILES; then
+        info "Keep files: active (SRT files preserved after embed)"
+    elif $do_embed; then
+        info "Cleanup: SRT files removed after embed"
+    fi
 
     local success=0 fail=0 skip=0 total=0
 
@@ -1836,8 +1840,8 @@ cmd_auto() {
             # Sync + embed even if subtitle already exists
             _auto_sync "$video_file" "$target_srt"
             if $do_embed; then
-                _auto_embed "$video_file" "$target_srt" "$target"
-                _auto_cleanup "$target_srt"
+                _auto_embed "$video_file" "$target_srt" "$target" && \
+                    _auto_cleanup "$target_srt"
             fi
             ((skip++)) || true
             continue
@@ -1957,8 +1961,8 @@ cmd_auto() {
                 _auto_sync "$video_file" "$target_srt"
                 # ── Step 5: Embed if requested ──
                 if $do_embed; then
-                    _auto_embed "$video_file" "$target_srt" "$target"
-                    _auto_cleanup "$target_srt" "$existing_srt"
+                    _auto_embed "$video_file" "$target_srt" "$target" && \
+                        _auto_cleanup "$target_srt" "$existing_srt"
                 fi
                 continue
             else
@@ -2043,9 +2047,11 @@ _auto_embed() {
         "$tmp_video" -y 2>/dev/null && [[ -s "$tmp_video" ]]; then
         mv "$tmp_video" "$video"
         log "Embed OK: $(basename "$video")"
+        return 0
     else
         warn "Embed failed: $(basename "$video")"
         rm -f "$tmp_video"
+        return 1
     fi
 }
 
