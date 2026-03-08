@@ -489,7 +489,7 @@ select_subtitle() {
         return 0
     fi
 
-    # Dry-run: just display results
+    # Dry-run: just display results (to stderr so $() capture doesn't swallow them)
     if $DRY_RUN; then
         header "Subtitles found"
         for ((j=0; j<${#entries[@]}; j++)); do
@@ -497,22 +497,22 @@ select_subtitle() {
             name=$(echo "${entries[$j]}" | jq -r '.name // "N/A"' 2>/dev/null)
             src_name=$(echo "${entries[$j]}" | jq -r '.source // "?"' 2>/dev/null)
             downloads=$(echo "${entries[$j]}" | jq -r '.downloads // 0' 2>/dev/null)
-            printf "  ${BOLD}%2d${NC}) [${CYAN}%-15s${NC}] %s ${YELLOW}(%s DL)${NC}\n" "$((j+1))" "$src_name" "$name" "$downloads"
+            printf "  ${BOLD}%2d${NC}) [${CYAN}%-15s${NC}] %s ${YELLOW}(%s DL)${NC}\n" "$((j+1))" "$src_name" "$name" "$downloads" >&2
         done
         return 1
     fi
 
-    # Interactive selection
+    # Interactive selection (display to stderr so $() capture doesn't swallow them)
     header "Subtitles found"
     for ((j=0; j<${#entries[@]}; j++)); do
         local name src_name downloads
         name=$(echo "${entries[$j]}" | jq -r '.name // "N/A"' 2>/dev/null)
         src_name=$(echo "${entries[$j]}" | jq -r '.source // "?"' 2>/dev/null)
         downloads=$(echo "${entries[$j]}" | jq -r '.downloads // 0' 2>/dev/null)
-        printf "  ${BOLD}%2d${NC}) [${CYAN}%-15s${NC}] %s ${YELLOW}(%s DL)${NC}\n" "$((j+1))" "$src_name" "$name" "$downloads"
+        printf "  ${BOLD}%2d${NC}) [${CYAN}%-15s${NC}] %s ${YELLOW}(%s DL)${NC}\n" "$((j+1))" "$src_name" "$name" "$downloads" >&2
     done
 
-    printf "\n"
+    printf "\n" >&2
     local choice
     read -rp "$(printf "${BOLD}Choice [1-${#entries[@]}]:${NC} ")" choice
     [[ -z "$choice" ]] && choice=1
@@ -2561,11 +2561,13 @@ cmd_extract() {
         printf "  ${BOLD}%2d${NC}) [${CYAN}%s${NC}] %s (%s)\n" "$((idx))" "$lang" "$title" "$codec"
     done
 
+    local track
     if [[ -n "$EXTRACT_TRACK" ]]; then
-        local track="$EXTRACT_TRACK"
+        track="$EXTRACT_TRACK"
+    elif [[ "$count" -eq 1 ]]; then
+        track=0
     else
         printf "\n"
-        local track
         read -rp "$(printf "${BOLD}Track to extract [0-$((count-1))]:${NC} ")" track
         [[ -z "$track" ]] && track=0
     fi
@@ -2613,12 +2615,18 @@ cmd_embed() {
 
     local sub_lang="${LANG_TARGET:-und}"
 
+    # MP4/M4V need mov_text codec, MKV/others use srt
+    local sub_codec="srt"
+    case "$ext" in
+        mp4|m4v|mov) sub_codec="mov_text" ;;
+    esac
+
     header "Embed subtitles"
     info "Video: $(basename "$FILE_PATH")"
     info "Subtitle: $(basename "$EMBED_SUB") ($sub_lang)"
 
     ffmpeg -v quiet -i "$FILE_PATH" -i "$EMBED_SUB" \
-        -c copy -c:s srt \
+        -c copy -c:s "$sub_codec" \
         -metadata:s:s:0 language="$sub_lang" \
         "$output" -y 2>/dev/null
 

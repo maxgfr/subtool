@@ -822,6 +822,487 @@ _detect_lang_offline_test "" "123 456 --> 789" \
     "offline fallback: numbers only -> empty"
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "urlencode"
+
+# Inline urlencode definition (can't sed-extract one-liner from script)
+_urlencode() {
+    jq -sRr @uri <<< "$1" | sed 's/%0A$//'
+}
+
+out=$(_urlencode "Die Discounter")
+assert_output_contains "urlencode: spaces -> %20" "$out" "%20"
+
+out=$(_urlencode "Café")
+assert_output_contains "urlencode: accents encoded" "$out" "Caf"
+
+out=$(_urlencode "test&value=1")
+assert_output_contains "urlencode: & encoded" "$out" "%26"
+
+# Verify no trailing %0A (newline encoding)
+out=$(_urlencode "hello")
+if [[ "$out" == *"%0A" ]]; then
+    assert "urlencode: no trailing %0A" 1
+else
+    assert "urlencode: no trailing %0A" 0
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "Smart parsing (edge cases)"
+
+# Leading zeros stripped
+test_parse "Show S01E03"                                   "Episode"  "Show"               "1"     "3"
+test_parse "Show S09E09"                                   "Episode"  "Show"               "9"     "9"
+
+# Mixed case
+test_parse "Show s02e05"                                   "Episode"  "Show"               "2"     "5"
+test_parse "Show s2E5"                                     "Episode"  "Show"               "2"     "5"
+
+# 3-digit episode
+test_parse "Naruto S01E148"                                "Episode"  "Naruto"             "1"     "148"
+
+# Year only -> movie
+test_parse "The Matrix 1999"                               "Movie"    "The Matrix"
+
+# Year + season (season takes priority, year still extracted)
+# "year" is extracted but mode is still "episode"
+test_parse "Show 2024 S01E05"                              "Episode"  "Show"               "1"     "5"
+
+# French format
+test_parse "Les Revenants saison 1"                        "Season"   "Les Revenants"      "1"
+test_parse "Lupin saison 2 episode 3"                      "Episode"  "Lupin"              "2"     "3"
+test_parse "Lupin saison 2 ep 3"                           "Episode"  "Lupin"              "2"     "3"
+
+# Title with dashes
+test_parse "Spider-Man S01E01"                             "Episode"  "Spider-Man"         "1"     "1"
+
+# Only title (movie)
+test_parse "Interstellar"                                  "Movie"    "Interstellar"
+
+# Range without E prefix on end
+test_parse "Show S01E01-05"                                "Range"    "Show"               "1"     "1" "5"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "OpenSubtitles URL building"
+
+# Source functions needed
+_test_os_url() {
+    local query="$1" lang="$2" season="${3:-}" episode="${4:-}"
+    bash -c "
+        urlencode() { jq -sRr @uri <<< \"\$1\" | sed 's/%0A\$//'; }
+        $(sed -n '/^search_opensubtitles_org()/,/^}/p' "$SUBSYNC")
+        api_retry() { echo \"MOCK_URL: \$3\" >&2; return 1; }
+        VERSION='1.0.0'
+        search_opensubtitles_org \"\$@\" 2>&1
+    " -- "$query" "$lang" "" "$season" "$episode" 2>&1 | grep "MOCK_URL:" | head -1 || true
+}
+
+out=$(_test_os_url "Breaking Bad" "en" "" "")
+assert_output_contains "os-url: query-only" "$out" "query-breaking%20bad/sublanguageid-eng"
+
+out=$(_test_os_url "Breaking Bad" "en" "5" "")
+assert_output_contains "os-url: with season" "$out" "query-breaking%20bad/season-5/sublanguageid-eng"
+
+out=$(_test_os_url "Breaking Bad" "en" "5" "14")
+assert_output_contains "os-url: with season+episode" "$out" "episode-14/query-breaking%20bad/season-5/sublanguageid-eng"
+
+# Alphabetical order: episode before query before season before sublanguageid
+out=$(_test_os_url "test" "fr" "2" "3")
+if echo "$out" | grep -q "episode-.*query-.*season-.*sublanguageid-"; then
+    assert "os-url: path segments in alphabetical order" 0
+else
+    assert "os-url: path segments in alphabetical order" 1
+fi
+
+# Query must be lowercase
+out=$(_test_os_url "DIE DISCOUNTER" "de" "" "")
+assert_output_contains "os-url: query lowercased" "$out" "query-die%20discounter"
+
+# Language code mapping
+_test_os_lang() {
+    local lang="$1" expected="$2"
+    local out
+    out=$(_test_os_url "test" "$lang" "" "")
+    if echo "$out" | grep -q "sublanguageid-${expected}"; then
+        assert "os-lang: $lang -> $expected" 0
+    else
+        assert "os-lang: $lang -> $expected (got: $out)" 1
+    fi
+}
+
+_test_os_lang "fr"  "fre"
+_test_os_lang "en"  "eng"
+_test_os_lang "de"  "ger"
+_test_os_lang "es"  "spa"
+_test_os_lang "it"  "ita"
+_test_os_lang "pt"  "por"
+_test_os_lang "nl"  "dut"
+_test_os_lang "pl"  "pol"
+_test_os_lang "ru"  "rus"
+_test_os_lang "ja"  "jpn"
+_test_os_lang "ko"  "kor"
+_test_os_lang "zh"  "chi"
+_test_os_lang "tr"  "tur"
+_test_os_lang "sv"  "swe"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "URL pattern parsing (download_from_url)"
+
+_test_url_parse() {
+    local url="$1" expected_id="$2" desc="$3"
+    local result
+    result=$(bash -c '
+        url="$1"
+        sub_id=""
+        if [[ "$url" =~ opensubtitles\.org/[a-z]{2}/subtitles/([0-9]+) ]]; then
+            sub_id="${BASH_REMATCH[1]}"
+        elif [[ "$url" =~ opensubtitles\.org/[a-z]{2}/subtitleserve/sub/([0-9]+) ]]; then
+            sub_id="${BASH_REMATCH[1]}"
+        elif [[ "$url" =~ opensubtitles\.org/[a-z]{2}/download/sub/([0-9]+) ]]; then
+            sub_id="${BASH_REMATCH[1]}"
+        fi
+        echo "$sub_id"
+    ' -- "$url")
+    if [[ "$result" == "$expected_id" ]]; then
+        assert "$desc" 0
+    else
+        assert "$desc (expected=$expected_id got=${result:-[empty]})" 1
+    fi
+}
+
+_test_url_parse "https://www.opensubtitles.org/en/subtitles/1234567/some-movie" \
+    "1234567" "url-parse: /subtitles/ pattern"
+_test_url_parse "https://www.opensubtitles.org/fr/subtitles/9876543/film-name" \
+    "9876543" "url-parse: /subtitles/ with fr locale"
+_test_url_parse "https://www.opensubtitles.org/en/subtitleserve/sub/5555555" \
+    "5555555" "url-parse: /subtitleserve/sub/ pattern"
+_test_url_parse "https://dl.opensubtitles.org/en/download/sub/7777777" \
+    "7777777" "url-parse: /download/sub/ pattern"
+_test_url_parse "https://example.com/random" \
+    "" "url-parse: non-opensubtitles URL -> no ID"
+_test_url_parse "not-a-url" \
+    "" "url-parse: invalid input -> no ID"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "embed codec selection"
+
+_test_codec() {
+    local ext="$1" expected="$2" desc="$3"
+    local sub_codec="srt"
+    case "$ext" in
+        mp4|m4v|mov) sub_codec="mov_text" ;;
+    esac
+    if [[ "$sub_codec" == "$expected" ]]; then
+        assert "$desc" 0
+    else
+        assert "$desc (expected=$expected got=$sub_codec)" 1
+    fi
+}
+
+_test_codec "mkv" "srt"      "codec: mkv -> srt"
+_test_codec "mp4" "mov_text"  "codec: mp4 -> mov_text"
+_test_codec "m4v" "mov_text"  "codec: m4v -> mov_text"
+_test_codec "mov" "mov_text"  "codec: mov -> mov_text"
+_test_codec "avi" "srt"       "codec: avi -> srt"
+_test_codec "webm" "srt"      "codec: webm -> srt"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "extract codec -> extension mapping"
+
+_test_extract_ext() {
+    local codec="$1" expected="$2" desc="$3"
+    local ext
+    case "$codec" in
+        subrip|srt)  ext="srt" ;;
+        ass|ssa)     ext="ass" ;;
+        webvtt)      ext="vtt" ;;
+        hdmv_pgs_subtitle|dvd_subtitle) ext="sup" ;;
+        *)           ext="srt" ;;
+    esac
+    if [[ "$ext" == "$expected" ]]; then
+        assert "$desc" 0
+    else
+        assert "$desc (expected=$expected got=$ext)" 1
+    fi
+}
+
+_test_extract_ext "subrip"               "srt" "extract-ext: subrip -> srt"
+_test_extract_ext "srt"                  "srt" "extract-ext: srt -> srt"
+_test_extract_ext "ass"                  "ass" "extract-ext: ass -> ass"
+_test_extract_ext "ssa"                  "ass" "extract-ext: ssa -> ass"
+_test_extract_ext "webvtt"               "vtt" "extract-ext: webvtt -> vtt"
+_test_extract_ext "hdmv_pgs_subtitle"    "sup" "extract-ext: pgs bitmap -> sup"
+_test_extract_ext "dvd_subtitle"         "sup" "extract-ext: dvd bitmap -> sup"
+_test_extract_ext "unknown_codec"        "srt" "extract-ext: unknown -> srt fallback"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "extract (auto-select single track)"
+
+if command -v ffmpeg &>/dev/null; then
+    # MKV with single subtitle track (no --track, should auto-select)
+    single_track_video="$TMP_DIR/single_track.mkv"
+    ffmpeg -v quiet -f lavfi -i "color=black:s=320x240:d=1" \
+        -i "$FIXTURES/basic.srt" \
+        -c:v libx264 -preset ultrafast -c:s srt \
+        "$single_track_video" -y 2>/dev/null
+
+    if [[ -f "$single_track_video" ]]; then
+        out=$("$SUBSYNC" extract -f "$single_track_video" -o "$TMP_DIR" 2>&1)
+        rc=$?
+        assert_exit_code "extract auto-select: exits 0 (no --track needed)" "0" "$rc"
+    fi
+
+    # MP4 embed + extract roundtrip
+    mp4_video="$TMP_DIR/test_mp4.mp4"
+    ffmpeg -v quiet -f lavfi -i "color=black:s=320x240:d=1" \
+        -c:v libx264 -preset ultrafast \
+        "$mp4_video" -y 2>/dev/null
+
+    if [[ -f "$mp4_video" ]]; then
+        out=$("$SUBSYNC" embed -f "$mp4_video" --sub "$FIXTURES/basic.srt" -l de -o "$TMP_DIR" 2>&1)
+        embedded="$TMP_DIR/test_mp4.subbed.mp4"
+        if [[ -s "$embedded" ]]; then
+            assert "embed mp4: mov_text codec works" 0
+            # Verify subtitles embedded
+            sub_count=$(ffprobe -v quiet -select_streams s -show_entries stream=index -of csv=p=0 "$embedded" 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$sub_count" -gt 0 ]]; then
+                assert "embed mp4: subtitle stream present" 0
+            else
+                assert "embed mp4: subtitle stream present" 1
+            fi
+        else
+            assert "embed mp4: mov_text codec works" 1
+        fi
+    fi
+else
+    printf "  ${YELLOW}SKIP${NC}  extract/embed advanced: ffmpeg not available\n"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "Google translate text extraction"
+
+# Test that text extraction skips indices, timestamps, blank lines, keeps only text
+_test_google_extract() {
+    local input="$1" expected_lines="$2" desc="$3"
+    local text_file="$TMP_DIR/extract_test_text.txt"
+    local lineno=0
+    : > "$text_file"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        ((lineno++)) || true
+        line="${line%$'\r'}"
+        if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] || [[ "$line" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+            continue
+        fi
+        echo "$line" >> "$text_file"
+    done < "$input"
+    local count
+    count=$(wc -l < "$text_file" | tr -d ' ')
+    if [[ "$count" == "$expected_lines" ]]; then
+        assert "$desc" 0
+    else
+        assert "$desc (expected=$expected_lines got=$count)" 1
+    fi
+}
+
+# basic.srt: 5 blocks (1 single-line + 4 double-line = 9 text lines)
+_test_google_extract "$FIXTURES/basic.srt" "9" "google-extract: basic.srt -> 9 text lines"
+# already_clean.srt: 3 blocks, 1 line each
+_test_google_extract "$FIXTURES/already_clean.srt" "3" "google-extract: already_clean.srt -> 3 text lines"
+
+# Verify text lines match expected content (no indices or timestamps)
+text_out="$TMP_DIR/extract_test_text.txt"
+: > "$text_out"
+while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] || [[ "$line" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+        continue
+    fi
+    echo "$line" >> "$text_out"
+done < "$FIXTURES/basic.srt"
+
+assert_file_contains "google-extract: text preserved" "$text_out" "Willkommen"
+assert_file_contains "google-extract: multiline text preserved" "$text_out" "Regale einraumen"
+assert_file_not_contains "google-extract: no indices" "$text_out" "^[0-9]+$"
+assert_file_not_contains "google-extract: no timestamps" "$text_out" "[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "chunk_srt (boundary tests)"
+
+# Source chunk_srt from script for direct testing
+_test_chunk() {
+    local file="$1" max_lines="$2" expected_chunks="$3" desc="$4"
+    local chunk_dir="$TMP_DIR/chunk_test_$$"
+    rm -rf "$chunk_dir"
+    mkdir -p "$chunk_dir"
+    local result
+    result=$(bash -c "
+        set -uo pipefail
+        CACHE_DIR='$chunk_dir'
+        $(sed -n '/^chunk_srt()/,/^}/p' "$SUBSYNC")
+        chunk_srt \"\$1\" \"\$2\"
+    " -- "$file" "$max_lines" 2>/dev/null) || true
+    if [[ "$result" == "$expected_chunks" ]]; then
+        assert "$desc" 0
+    else
+        assert "$desc (expected=$expected_chunks got=${result:-0})" 1
+    fi
+    rm -rf "$chunk_dir"
+}
+
+_test_chunk "$FIXTURES/basic.srt" "200" "1" "chunk: small file, high limit -> 1 chunk"
+_test_chunk "$FIXTURES/basic.srt" "4"   "5" "chunk: small file, low limit -> 5 chunks"
+_test_chunk "$FIXTURES/large.srt" "10"  "7" "chunk: large file, 10-line limit -> 7 chunks"
+_test_chunk "$FIXTURES/large.srt" "200" "1" "chunk: large file, high limit -> 1 chunk"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "CRLF handling"
+
+# Create a CRLF file and test that fix converts it
+crlf_file="$TMP_DIR/crlf_test.srt"
+printf "1\r\n00:00:01,000 --> 00:00:03,500\r\nHello CRLF world.\r\n\r\n2\r\n00:00:04,000 --> 00:00:07,000\r\nSecond block.\r\n" > "$crlf_file"
+"$SUBSYNC" fix -f "$crlf_file" -o "$TMP_DIR" 2>&1 >/dev/null
+fixed_crlf="$TMP_DIR/crlf_test.fixed.srt"
+if [[ -f "$fixed_crlf" ]]; then
+    # Check no \r in output
+    if grep -qP '\r' "$fixed_crlf" 2>/dev/null || grep -c $'\r' "$fixed_crlf" 2>/dev/null | grep -qv '^0$'; then
+        assert "crlf: fix removes \\r" 1
+    else
+        assert "crlf: fix removes \\r" 0
+    fi
+    assert_file_contains "crlf: text preserved after fix" "$fixed_crlf" "Hello CRLF world"
+    assert_file_contains "crlf: timestamps preserved after fix" "$fixed_crlf" "00:00:01,000"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "BOM handling"
+
+# Create a file with UTF-8 BOM
+bom_file="$TMP_DIR/bom_test.srt"
+printf '\xef\xbb\xbf1\n00:00:01,000 --> 00:00:03,500\nBOM test line.\n\n2\n00:00:04,000 --> 00:00:07,000\nSecond block.\n' > "$bom_file"
+"$SUBSYNC" fix -f "$bom_file" -o "$TMP_DIR" 2>&1 >/dev/null
+fixed_bom="$TMP_DIR/bom_test.fixed.srt"
+if [[ -f "$fixed_bom" ]]; then
+    # Check BOM removed (first 3 bytes should NOT be EF BB BF)
+    first_bytes=$(xxd -l 3 -p "$fixed_bom" 2>/dev/null)
+    if [[ "$first_bytes" == "efbbbf" ]]; then
+        assert "bom: fix removes UTF-8 BOM" 1
+    else
+        assert "bom: fix removes UTF-8 BOM" 0
+    fi
+    assert_file_contains "bom: text preserved after BOM removal" "$fixed_bom" "BOM test line"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "CLI flag validation"
+
+# --help shows --keep-files
+out=$("$SUBSYNC" --help 2>&1)
+assert_output_contains "help: shows --keep-files" "$out" "\-\-keep-files"
+assert_output_contains "help: shows --force-translate" "$out" "\-\-force-translate"
+assert_output_contains "help: shows --embed" "$out" "\-\-embed"
+assert_output_contains "help: shows --no-embed" "$out" "\-\-no-embed"
+assert_output_contains "help: shows autosync" "$out" "autosync"
+assert_output_contains "help: shows extract" "$out" "extract"
+assert_output_contains "help: shows embed command" "$out" "embed"
+assert_output_contains "help: shows --from" "$out" "\-\-from"
+assert_output_contains "help: shows --model" "$out" "\-\-model"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "sync edge cases"
+
+# Sync to exact zero (timestamp should clamp to 00:00:00,000)
+"$SUBSYNC" sync -f "$FIXTURES/basic.srt" --shift -1000 -o "$TMP_DIR" 2>&1
+out_file="$TMP_DIR/basic.synced.srt"
+assert_file_contains "sync -1000ms: first timestamp shifted" "$out_file" "00:00:00,000"
+assert_file_not_contains "sync -1000ms: no negative timestamps" "$out_file" "^-"
+
+# Large positive shift
+"$SUBSYNC" sync -f "$FIXTURES/basic.srt" --shift +3600000 -o "$TMP_DIR" 2>&1
+out_file="$TMP_DIR/basic.synced.srt"
+assert_file_contains "sync +1h: hour shift works" "$out_file" "01:00:01,000"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "clean edge cases"
+
+# Clean file with music notes (♪) — clean removes ♪...♪ lines
+clean_music="$TMP_DIR/music_test.srt"
+cat > "$clean_music" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,500
+♪ La la la ♪
+
+2
+00:00:04,000 --> 00:00:07,000
+Real dialogue here.
+
+3
+00:00:08,000 --> 00:00:11,000
+<i>Italic text to remove</i>
+EOF
+"$SUBSYNC" clean -f "$clean_music" -o "$TMP_DIR" 2>&1 >/dev/null
+cleaned="$TMP_DIR/music_test.clean.srt"
+assert_file_not_contains "clean: music notes removed" "$cleaned" "♪"
+assert_file_contains "clean: real dialogue preserved" "$cleaned" "Real dialogue"
+assert_file_not_contains "clean: HTML <i> removed" "$cleaned" "<i>"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "convert edge cases"
+
+# Convert empty-ish SRT (only 1 block)
+single_block="$TMP_DIR/single_block.srt"
+cat > "$single_block" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,500
+Only one block.
+EOF
+"$SUBSYNC" convert -f "$single_block" --to vtt -o "$TMP_DIR" 2>&1 >/dev/null
+out_file="$TMP_DIR/single_block.vtt"
+assert_file_exists "convert single block: vtt created" "$out_file"
+assert_file_contains "convert single block: WEBVTT header" "$out_file" "^WEBVTT"
+assert_file_contains "convert single block: text preserved" "$out_file" "Only one block"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "merge edge cases"
+
+# Merge files with different subtitle counts (secondary shorter)
+short_file="$TMP_DIR/short.srt"
+cat > "$short_file" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,500
+Only two blocks.
+
+2
+00:00:04,000 --> 00:00:07,200
+Second block short.
+EOF
+"$SUBSYNC" merge -f "$FIXTURES/basic.srt" --merge-with "$short_file" -o "$TMP_DIR" 2>&1 >/dev/null
+merged="$TMP_DIR/basic.dual.srt"
+assert_file_contains "merge mismatched: primary text preserved" "$merged" "Willkommen"
+assert_file_contains "merge mismatched: secondary text present" "$merged" "Only two blocks"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "error messages"
+
+# embed without --sub
+out=$("$SUBSYNC" embed -f "$FIXTURES/basic.srt" 2>&1 || true)
+assert_output_contains "embed no --sub: error message" "$out" "Specify.*--sub"
+
+# autosync without --ref
+out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" 2>&1 || true)
+assert_output_contains "autosync no --ref: error message" "$out" "Specify.*--ref"
+
+# merge without --merge-with
+out=$("$SUBSYNC" merge -f "$FIXTURES/basic.srt" 2>&1 || true)
+assert_output_contains "merge no --merge-with: error message" "$out" "Specify.*--merge"
+
+# sync without --shift
+out=$("$SUBSYNC" sync -f "$FIXTURES/basic.srt" 2>&1 || true)
+assert_output_contains "sync no --shift: error message" "$out" "Specify.*--shift"
+
+# convert without --to
+out=$("$SUBSYNC" convert -f "$FIXTURES/basic.srt" 2>&1 || true)
+assert_output_contains "convert no --to: error message" "$out" "Specify.*--to"
+
+# ══════════════════════════════════════════════════════════════════════════════
 # RESULTS
 # ══════════════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}══════════════════════════════════════════${NC}\n"
