@@ -15,7 +15,7 @@ Single bash script (`subtool.sh`, ~2670 lines) for subtitle management: download
 
 ### Subtitle Sources (search + download)
 
-- **OpenSubtitles.org** (`rest.opensubtitles.org`) — free, no API key. Default source. Queries must be lowercase. Client-side season/episode filtering (API doesn't support combined query+season+episode).
+- **OpenSubtitles.org** (`rest.opensubtitles.org`) — free, no API key. Default source. Queries must be lowercase. Server-side season/episode filtering via path segments in alphabetical order (e.g., `/search/episode-1/query-foo/season-2/sublanguageid-eng`).
 - **Podnapisi** — scrapes podnapisi.net JSON API, no API key
 
 Default order: `opensubtitles-org,podnapisi`. No API keys needed for any source.

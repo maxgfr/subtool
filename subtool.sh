@@ -21,6 +21,7 @@ SEASON=""
 EPISODE=""
 OUTPUT_DIR="."
 FORCE_TRANSLATE=false
+KEEP_FILES=false
 SOURCES="opensubtitles-org,podnapisi"
 FALLBACK_LANGS="en,de,es,pt"
 MAX_EPISODE=20
@@ -251,9 +252,12 @@ search_opensubtitles_org() {
     local encoded_query
     encoded_query=$(urlencode "$lower_query")
 
-    # The .org API doesn't support query + season + episode in the same path
-    # Search by query + language, then filter client-side
-    local url="https://rest.opensubtitles.org/search/query-${encoded_query}/sublanguageid-${lang3}"
+    # Build URL with path segments in alphabetical order (API requires this)
+    local url="https://rest.opensubtitles.org/search/"
+    [[ -n "$episode" ]] && url+="episode-${episode}/"
+    url+="query-${encoded_query}/"
+    [[ -n "$season" ]] && url+="season-${season}/"
+    url+="sublanguageid-${lang3}"
 
     local resp
     resp=$(api_retry curl -sf "$url" -H "User-Agent: subtool v${VERSION}") || return 1
@@ -262,21 +266,7 @@ search_opensubtitles_org() {
     count=$(echo "$resp" | jq 'length' 2>/dev/null) || true
     [[ "$count" == "0" || -z "$count" ]] && return 1
 
-    # Filter season/episode client-side if requested
-    local filtered
-    if [[ -n "$season" && -n "$episode" ]]; then
-        filtered=$(echo "$resp" | jq -c --arg s "$season" --arg e "$episode" \
-            '[.[] | select(.SeriesSeason == $s and .SeriesEpisode == $e)]' 2>/dev/null) || true
-    elif [[ -n "$season" ]]; then
-        filtered=$(echo "$resp" | jq -c --arg s "$season" \
-            '[.[] | select(.SeriesSeason == $s)]' 2>/dev/null) || true
-    else
-        filtered="$resp"
-    fi
-
-    local fcount
-    fcount=$(echo "$filtered" | jq 'length' 2>/dev/null) || true
-    [[ "$fcount" == "0" || -z "$fcount" ]] && return 1
+    local filtered="$resp"
 
     echo "$filtered" | jq -c '.[] | {
         id: .SubDownloadLink,
@@ -438,7 +428,7 @@ search_all_sources() {
     IFS=',' read -ra source_list <<< "$SOURCES"
     for source in "${source_list[@]}"; do
         source=$(echo "$source" | tr -d ' ')
-        info "Searching on ${BOLD}$source${NC}..." >&2
+        printf "${CYAN}[i]${NC} Searching on ${BOLD}%s${NC}...\n" "$source" >&2
         local result=""
         case "$source" in
             opensubtitles-org)
@@ -943,7 +933,7 @@ translate_local_file() {
     # Auto-detect source language if not specified
     if [[ -z "$src_lang" ]]; then
         local sample
-        sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$input" | head -20 | tr '\n' ' ')
+        sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$input" | head -20 | tr '\n' ' ' || true)
         src_lang=$(detect_lang "$sample")
         if [[ -n "$src_lang" ]]; then
             info "Source language detected: $src_lang"
@@ -1014,6 +1004,7 @@ ${BOLD}OPTIONS${NC}
     --embed                   Embed subtitles in video (auto: active by default)
     --no-embed                Disable automatic embedding
     --force-translate         Force translation even if subtitles found
+    --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
     --auto                    Automatically select first result
     --dry-run                 Display results without downloading
     --json                    JSON output (for integration with other tools)
@@ -1480,6 +1471,12 @@ cmd_search() {
 
     local results
     if results=$(search_all_sources "$query" "$LANG_TARGET" "$IMDB_ID" "$SEASON" "$EPISODE"); then
+        # JSON mode: just output and exit (no download)
+        if $JSON_OUTPUT; then
+            select_subtitle "$results"
+            return 0
+        fi
+
         local selected
         if selected=$(select_subtitle "$results"); then
             local name
@@ -1808,6 +1805,7 @@ cmd_auto() {
     header "subtool auto"
     info "Target language: $target"
     $do_embed && info "Embed: active" || info "Embed: inactive (ffmpeg required)"
+    $KEEP_FILES && info "Keep files: active" || $do_embed && info "Cleanup: SRT files removed after embed"
 
     local success=0 fail=0 skip=0 total=0
 
@@ -1839,6 +1837,7 @@ cmd_auto() {
             _auto_sync "$video_file" "$target_srt"
             if $do_embed; then
                 _auto_embed "$video_file" "$target_srt" "$target"
+                _auto_cleanup "$target_srt"
             fi
             ((skip++)) || true
             continue
@@ -1892,6 +1891,7 @@ cmd_auto() {
                     _auto_sync "$video_file" "$target_srt"
                     if $do_embed; then
                         _auto_embed "$video_file" "$target_srt" "$target"
+                        _auto_cleanup "$target_srt"
                     fi
                     continue
                 fi
@@ -1929,7 +1929,7 @@ cmd_auto() {
                             # Detect language of downloaded subtitle
                             local detected_lang
                             local sample
-                            sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$url_srt" | head -20 | tr '\n' ' ')
+                            sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$url_srt" | head -20 | tr '\n' ' ' || true)
                             detected_lang=$(detect_lang "$sample")
                             [[ -z "$detected_lang" ]] && detected_lang="und"
                             # Rename with detected language
@@ -1958,6 +1958,7 @@ cmd_auto() {
                 # ── Step 5: Embed if requested ──
                 if $do_embed; then
                     _auto_embed "$video_file" "$target_srt" "$target"
+                    _auto_cleanup "$target_srt" "$existing_srt"
                 fi
                 continue
             else
@@ -1975,6 +1976,18 @@ cmd_auto() {
     printf "\n"
     header "Auto result"
     log "Total: $total | OK: $success | Skips: $skip | Failed: $fail"
+}
+
+# Helper for auto-cleanup (remove SRT files after successful embed)
+_auto_cleanup() {
+    $KEEP_FILES && return 0
+    local files_to_remove=("$@")
+    for f in "${files_to_remove[@]}"; do
+        if [[ -f "$f" ]]; then
+            rm -f "$f"
+            debug "Cleanup: removed $(basename "$f")" || true
+        fi
+    done
 }
 
 # Helper for auto-sync (sync subtitle with video via ffsubsync)
@@ -2069,7 +2082,7 @@ cmd_info() {
 
     # Language detection
     local sample_text
-    sample_text=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$FILE_PATH" | head -20 | tr '\n' ' ')
+    sample_text=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$FILE_PATH" | head -20 | tr '\n' ' ' || true)
     local detected_lang="?"
     if echo "$sample_text" | grep -qiE '\b(the|and|is|are|you|that|this|have|with)\b'; then
         detected_lang="en (English)"
@@ -2715,6 +2728,7 @@ parse_args() {
             --track)       EXTRACT_TRACK="$2"; shift 2 ;;
             --ref)         AUTOSYNC_REF="$2"; shift 2 ;;
             --force-translate) FORCE_TRANSLATE=true; shift ;;
+            --keep-files)  KEEP_FILES=true; shift ;;
             --auto)        AUTO_SELECT=true; shift ;;
             --embed)       AUTO_EMBED=true; shift ;;
             --no-embed)    NO_EMBED=true; shift ;;

@@ -23,7 +23,7 @@ jobs:
 
       - name: Install deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg jq
+        run: brew install bash ffmpeg jq
 
       - name: Run tests
         run: ./tests/run_tests.sh
