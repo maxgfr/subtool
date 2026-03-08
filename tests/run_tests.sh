@@ -643,7 +643,7 @@ assert_output_contains "autosync fichier inexistant -> erreur" "$out" "introuvab
 # autosync sans ffsubsync -> message uvx ou fallback uvx
 if ! command -v ffsubsync &>/dev/null && ! command -v uvx &>/dev/null; then
     out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" 2>&1 || true)
-    assert_output_contains "autosync sans ffsubsync ni uvx -> erreur" "$out" "uvx ffsubsync\|uv tool install"
+    assert_output_contains "autosync sans ffsubsync ni uvx -> erreur" "$out" "uvx ffsubsync|uv tool install"
 elif ! command -v ffsubsync &>/dev/null && command -v uvx &>/dev/null; then
     out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" 2>&1 || true)
     assert_output_contains "autosync via uvx: fallback detecte" "$out" "uvx"
@@ -701,7 +701,7 @@ if command -v ffsubsync &>/dev/null; then
 elif command -v uvx &>/dev/null; then
     assert_output_contains "check: ffsubsync OK (via uvx)" "$out" "via uvx"
 else
-    assert_output_contains "check: ffsubsync N/A avec hint uvx" "$out" "uvx ffsubsync\|uv tool install"
+    assert_output_contains "check: ffsubsync N/A avec hint uvx" "$out" "uvx ffsubsync|uv tool install"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
