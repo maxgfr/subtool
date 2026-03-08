@@ -43,7 +43,7 @@ MODEL_GEMINI="gemini-2.5-flash"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 log()    { { $QUIET && return; printf "${GREEN}[+]${NC} %s\n" "$*"; } || true; }
-warn()   { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
+warn()   { { $QUIET && return; printf "${YELLOW}[!]${NC} %s\n" "$*"; } || true; }
 err()    { printf "${RED}[x]${NC} %s\n" "$*" >&2; }
 info()   { { $QUIET && return; printf "${CYAN}[i]${NC} %s\n" "$*"; } || true; }
 debug()  { $VERBOSE && printf "${BLUE}[D]${NC} %s\n" "$*" >&2 || true; }
@@ -329,7 +329,7 @@ download_from_url() {
             mkdir -p "$tmp_dir"
             unzip -qo "$tmp_file" -d "$tmp_dir" 2>/dev/null
             local srt_found
-            srt_found=$(/usr/bin/find "$tmp_dir" -iname "*.srt" | head -1)
+            srt_found=$(find "$tmp_dir" -iname "*.srt" | head -1)
             if [[ -n "$srt_found" ]]; then
                 mv "$srt_found" "$output"
             fi
@@ -359,7 +359,7 @@ download_from_url() {
             mkdir -p "$tmp_dir"
             unzip -qo "$tmp_gz" -d "$tmp_dir" 2>/dev/null
             local srt_found
-            srt_found=$(/usr/bin/find "$tmp_dir" -iname "*.srt" | head -1)
+            srt_found=$(find "$tmp_dir" -iname "*.srt" | head -1)
             if [[ -n "$srt_found" ]]; then
                 mv "$srt_found" "$output"
             fi
@@ -715,7 +715,7 @@ translate_with_claude_code() {
 
     local full_input
     full_input=$(printf '%s\n\n%s' "$prompt" "$content")
-    CLAUDECODE='' claude -p --model "$model" --effort low --tools "" "$full_input" > "$output" 2>/dev/null || {
+    CLAUDECODE='' printf '%s' "$full_input" | claude -p --model "$model" --effort low --tools "" > "$output" 2>/dev/null || {
         err "Claude Code translation failed"
         return 1
     }
@@ -1117,11 +1117,12 @@ cmd_config() {
         local key="$CONFIG_KEY" value="$CONFIG_VALUE"
         [[ -z "$key" ]] && die "Usage: subtool config set <KEY> <VALUE>"
         # Update or add the key
-        # Escape value for safe sed replacement (handle |, \, &, /)
-        local escaped_value
+        # Escape key and value for safe sed replacement (handle |, \, &, /)
+        local escaped_key escaped_value
+        escaped_key=$(printf '%s\n' "$key" | sed -e 's/[].[\\/^$*|]/\\&/g')
         escaped_value=$(printf '%s\n' "$value" | sed -e 's/[|\\&/]/\\&/g')
-        if grep -q "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
-            sed -i.bak "s|^${key}=.*|${key}=\"${escaped_value}\"|" "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
+        if grep -q "^${escaped_key}=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i.bak "s|^${escaped_key}=.*|${key}=\"${escaped_value}\"|" "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
         else
             echo "${key}=\"${value}\"" >> "$CONFIG_FILE"
         fi
@@ -1818,7 +1819,7 @@ cmd_auto() {
         info "Directory: $SCAN_DIR"
         while IFS= read -r -d '' vf; do
             video_files+=("$vf")
-        done < <(/usr/bin/find "$SCAN_DIR" -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" -o -iname "*.webm" -o -iname "*.m4v" -o -iname "*.mpg" -o -iname "*.mpeg" -o -iname "*.ts" \) -print0 2>/dev/null | sort -z)
+        done < <(find "$SCAN_DIR" -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" -o -iname "*.webm" -o -iname "*.m4v" -o -iname "*.mpg" -o -iname "*.mpeg" -o -iname "*.ts" \) -print0 2>/dev/null | sort -z)
     fi
 
     total=${#video_files[@]}
@@ -2118,10 +2119,10 @@ cmd_clean() {
     [[ -z "$FILE_PATH" ]] && die "Specify --file <file.srt>"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
-    local basename ext output
-    basename=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    local base_name ext output
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
     ext="${FILE_PATH##*.}"
-    output="${OUTPUT_DIR}/${basename}.clean.${ext}"
+    output="${OUTPUT_DIR}/${base_name}.clean.${ext}"
 
     header "Cleaning: $(basename "$FILE_PATH")"
 
@@ -2177,10 +2178,10 @@ cmd_sync() {
     [[ -z "$SYNC_SHIFT" ]] && die "Specify --shift <ms> (e.g., +1500, -800)"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
-    local basename ext output
-    basename=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    local base_name ext output
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
     ext="${FILE_PATH##*.}"
-    output="${OUTPUT_DIR}/${basename}.synced.${ext}"
+    output="${OUTPUT_DIR}/${base_name}.synced.${ext}"
 
     header "Sync: $(basename "$FILE_PATH") (${SYNC_SHIFT}ms)"
 
@@ -2222,10 +2223,10 @@ cmd_convert() {
     [[ -z "$CONVERT_FORMAT" ]] && die "Specify --to <format> (srt, vtt, ass)"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
-    local basename src_ext
-    basename=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    local base_name src_ext
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
     src_ext="${FILE_PATH##*.}"
-    local output="${OUTPUT_DIR}/${basename}.${CONVERT_FORMAT}"
+    local output="${OUTPUT_DIR}/${base_name}.${CONVERT_FORMAT}"
 
     header "Convert: ${src_ext} -> ${CONVERT_FORMAT}"
 
@@ -2344,10 +2345,10 @@ cmd_merge() {
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
     [[ ! -f "$MERGE_FILE" ]] && die "File not found: $MERGE_FILE"
 
-    local basename ext output
-    basename=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    local base_name ext output
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
     ext="${FILE_PATH##*.}"
-    output="${OUTPUT_DIR}/${basename}.dual.${ext}"
+    output="${OUTPUT_DIR}/${base_name}.dual.${ext}"
 
     header "Bilingual merge"
     info "Primary: $(basename "$FILE_PATH")"
@@ -2391,8 +2392,8 @@ cmd_merge() {
         local sec_text=""
         sec_text=$(sed -n "${idx}p" "$tmp_sec" 2>/dev/null | cut -d'|' -f3-)
         # Convert \n back to real newlines
-        text=$(echo -e "$text")
-        sec_text=$(echo -e "$sec_text")
+        text=$(printf '%b' "$text")
+        sec_text=$(printf '%b' "$sec_text")
         printf '%d\n%s --> %s\n%s\n<i>%s</i>\n\n' "$idx" "$start" "$end_ts" "$text" "$sec_text" >> "$output"
     done < "$tmp_pri"
 
@@ -2407,10 +2408,10 @@ cmd_fix() {
     [[ -z "$FILE_PATH" ]] && die "Specify --file <file.srt>"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
-    local basename ext output
-    basename=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    local base_name ext output
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
     ext="${FILE_PATH##*.}"
-    output="${OUTPUT_DIR}/${basename}.fixed.${ext}"
+    output="${OUTPUT_DIR}/${base_name}.fixed.${ext}"
 
     header "Repair: $(basename "$FILE_PATH")"
 
@@ -2522,8 +2523,8 @@ cmd_extract() {
         die "ffmpeg required for extraction. Install it: brew install ffmpeg"
     fi
 
-    local basename
-    basename=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    local base_name
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
 
     header "Extract subtitles: $(basename "$FILE_PATH")"
 
@@ -2570,7 +2571,7 @@ cmd_extract() {
         *)           ext="srt" ;;
     esac
 
-    local output="${OUTPUT_DIR}/${basename}.${lang}.${ext}"
+    local output="${OUTPUT_DIR}/${base_name}.${lang}.${ext}"
     ffmpeg -v quiet -i "$FILE_PATH" -map "0:s:${track}" -c:s "$([[ "$ext" == "srt" ]] && echo "srt" || echo "copy")" "$output" -y 2>/dev/null
 
     if [[ -s "$output" ]]; then
@@ -2592,10 +2593,10 @@ cmd_embed() {
         die "ffmpeg required. Install it: brew install ffmpeg"
     fi
 
-    local basename ext output
-    basename=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    local base_name ext output
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
     ext="${FILE_PATH##*.}"
-    output="${OUTPUT_DIR}/${basename}.subbed.${ext}"
+    output="${OUTPUT_DIR}/${base_name}.subbed.${ext}"
 
     local sub_lang="${LANG_TARGET:-und}"
 
@@ -2636,10 +2637,10 @@ cmd_autosync() {
         fi
     fi
 
-    local basename ext output
-    basename=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    local base_name ext output
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
     ext="${FILE_PATH##*.}"
-    output="${OUTPUT_DIR}/${basename}.synced.${ext}"
+    output="${OUTPUT_DIR}/${base_name}.synced.${ext}"
 
     local ref_ext="${AUTOSYNC_REF##*.}"
 
