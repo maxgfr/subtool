@@ -1032,6 +1032,7 @@ ${BOLD}OPTIONS${NC}
     --to <format>             Target format for convert (srt, vtt, ass)
     --merge-with <file>       Secondary file for bilingual merge
     --ref <video|srt>         Reference for autosync (video or SRT)
+    --ref-stream <stream>     Audio stream for autosync (e.g., a:1 for 2nd audio track). Auto-detected from -l
     --sub <file>              SRT file to embed in a video
     --track <num>             Track to extract
     --url <url>               Download a subtitle from an opensubtitles.org URL
@@ -1889,7 +1890,7 @@ cmd_auto() {
         # Already has target language subtitle? (skip only if non-empty)
         if [[ -s "$target_srt" ]]; then
             # Sync + embed even if subtitle already exists
-            _auto_sync "$video_file" "$target_srt"
+            _auto_sync "$video_file" "$target_srt" "$target"
             if $do_embed; then
                 _auto_embed "$video_file" "$target_srt" "$target" && \
                     _auto_cleanup "$target_srt"
@@ -1900,7 +1901,23 @@ cmd_auto() {
 
         printf "\n${BOLD}── %s ──${NC}\n" "$base_name" >&2
 
-        # ── Step 1: Check for existing subtitle in any language ──
+        # ── Step 0: Try extracting embedded subtitle in target language ──
+        if command -v ffmpeg &>/dev/null && command -v ffprobe &>/dev/null; then
+            local embedded_idx
+            if embedded_idx=$(_find_subtitle_stream_index "$video_file" "$target"); then
+                if ffmpeg -v error -i "$video_file" -map "0:${embedded_idx}" -c:s srt "$target_srt" -y 2>/dev/null && [[ -s "$target_srt" ]]; then
+                    log "Extracted embedded subtitle ($target, stream $embedded_idx): $(basename "$target_srt")"
+                    ((success++)) || true
+                    if $do_embed; then
+                        _auto_embed "$video_file" "$target_srt" "$target" && \
+                            _auto_cleanup "$target_srt"
+                    fi
+                    continue
+                fi
+            fi
+        fi
+
+        # ── Step 1: Check for existing external subtitle in any language ──
         local existing_srt="" existing_lang=""
         for srt_file in "${dir_name}/${name_no_ext}".*.srt; do
             [[ -f "$srt_file" ]] || continue
@@ -1943,7 +1960,7 @@ cmd_auto() {
                     log "Downloaded (${target}): $target_srt"
                     ((success++)) || true
                     # No translation needed, already in target language
-                    _auto_sync "$video_file" "$target_srt"
+                    _auto_sync "$video_file" "$target_srt" "$target"
                     if $do_embed; then
                         _auto_embed "$video_file" "$target_srt" "$target"
                         _auto_cleanup "$target_srt"
@@ -2009,7 +2026,7 @@ cmd_auto() {
                 ((success++)) || true
 
                 # ── Step 4: Sync with video ──
-                _auto_sync "$video_file" "$target_srt"
+                _auto_sync "$video_file" "$target_srt" "$target"
                 # ── Step 5: Embed if requested ──
                 if $do_embed; then
                     _auto_embed "$video_file" "$target_srt" "$target" && \
@@ -2045,9 +2062,84 @@ _auto_cleanup() {
     done
 }
 
+# Helper: map 2-letter lang to 3-letter ISO 639-2 code (used by ffprobe)
+_lang_to_iso639_2() {
+    case "$1" in
+        fr|fre|fra) echo "fre" ;; en|eng)     echo "eng" ;; es|spa)     echo "spa" ;;
+        de|ger|deu) echo "ger" ;; it|ita)     echo "ita" ;; pt|por)     echo "por" ;;
+        ru|rus)     echo "rus" ;; ar|ara)     echo "ara" ;; ja|jpn)     echo "jpn" ;;
+        ko|kor)     echo "kor" ;; zh|chi|zho) echo "chi" ;; nl|dut|nld) echo "dut" ;;
+        pl|pol)     echo "pol" ;; sv|swe)     echo "swe" ;; da|dan)     echo "dan" ;;
+        fi|fin)     echo "fin" ;; no|nor)     echo "nor" ;; tr|tur)     echo "tur" ;;
+        *)          echo "$1" ;;
+    esac
+}
+
+# Helper: find the global stream index of an embedded subtitle matching a language
+# Returns the global stream index (e.g., "4") for use with ffmpeg -map 0:N
+_find_subtitle_stream_index() {
+    local video="$1" lang="$2"
+    [[ -z "$lang" ]] && return 1
+    command -v ffprobe &>/dev/null || return 1
+    local lang3
+    lang3=$(_lang_to_iso639_2 "$lang")
+
+    while IFS=',' read -r idx stream_lang; do
+        idx=$(echo "$idx" | tr -d '[:space:]')
+        stream_lang=$(echo "$stream_lang" | tr -d '[:space:]')
+        if [[ "$stream_lang" == "$lang" || "$stream_lang" == "$lang3" ]]; then
+            echo "$idx"
+            return 0
+        fi
+    done < <(ffprobe -v error -select_streams s -show_entries stream=index:stream_tags=language -of csv=p=0 "$video" 2>/dev/null)
+
+    return 1
+}
+
+# Helper: extract an embedded subtitle to a temp file for use as sync reference
+# Returns the path to the extracted temp file, or fails
+_extract_ref_subtitle() {
+    local video="$1" lang="$2"
+    command -v ffmpeg &>/dev/null || return 1
+    local stream_idx
+    stream_idx=$(_find_subtitle_stream_index "$video" "$lang") || return 1
+
+    local ref_tmp="${CACHE_DIR}/sync_ref_${lang}_$$.srt"
+    if ffmpeg -v error -i "$video" -map "0:${stream_idx}" -c:s srt "$ref_tmp" -y 2>/dev/null; then
+        if [[ -s "$ref_tmp" ]]; then
+            echo "$ref_tmp"
+            return 0
+        fi
+    fi
+    rm -f "$ref_tmp"
+    return 1
+}
+
+# Helper: find the audio stream index matching a language in a video file
+# Returns ffsubsync-compatible stream reference (e.g., "a:1") or fails
+_find_audio_stream() {
+    local video="$1" lang="$2"
+    [[ -z "$lang" ]] && return 1
+    command -v ffprobe &>/dev/null || return 1
+    local lang3
+    lang3=$(_lang_to_iso639_2 "$lang")
+
+    local audio_idx=0
+    while IFS= read -r stream_lang; do
+        stream_lang=$(echo "$stream_lang" | tr -d '[:space:]')
+        if [[ "$stream_lang" == "$lang" || "$stream_lang" == "$lang3" ]]; then
+            echo "a:$audio_idx"
+            return 0
+        fi
+        ((audio_idx++))
+    done < <(ffprobe -v error -select_streams a -show_entries stream_tags=language -of csv=p=0 "$video" 2>/dev/null)
+
+    return 1
+}
+
 # Helper for auto-sync (sync subtitle with video via ffsubsync)
 _auto_sync() {
-    local video="$1" sub="$2"
+    local video="$1" sub="$2" lang="${3:-}"
     # Determine ffsubsync command
     local ffsubsync_cmd="ffsubsync"
     if ! command -v ffsubsync &>/dev/null; then
@@ -2060,18 +2152,44 @@ _auto_sync() {
         fi
     fi
     local synced="${sub%.srt}.synced.srt"
-    info "Sync: $(basename "$sub") with $(basename "$video")"
-    if $ffsubsync_cmd "$video" -i "$sub" -o "$synced" 2>/dev/null; then
+
+    # Find best sync reference for target language:
+    # 1. Extract embedded subtitle in same language (fast, accurate subtitle-to-subtitle sync)
+    # 2. Fall back to matching audio track via --reference-stream (slower VAD-based sync)
+    local sync_ref="$video"
+    local ref_stream_args=()
+    local ref_tmp=""
+    if [[ -n "$lang" ]]; then
+        if ref_tmp=$(_extract_ref_subtitle "$video" "$lang"); then
+            sync_ref="$ref_tmp"
+            info "Sync: using extracted embedded subtitle ($lang)"
+        else
+            local stream_ref
+            if stream_ref=$(_find_audio_stream "$video" "$lang"); then
+                ref_stream_args=(--reference-stream "$stream_ref")
+                info "Sync: using audio track $stream_ref ($lang)"
+            fi
+        fi
+    fi
+
+    info "Sync: $(basename "$sub") with $(basename "$video") (this may take a few minutes)"
+    local sync_output
+    if sync_output=$($ffsubsync_cmd "$sync_ref" -i "$sub" -o "$synced" "${ref_stream_args[@]}" 2>&1); then
+        debug "ffsubsync output: $sync_output" || true
         if [[ -s "$synced" ]]; then
             mv "$synced" "$sub"
             log "Sync OK: $(basename "$sub")"
         else
-            warn "Sync failed — empty file, keeping original"
+            warn "Sync produced empty file — keeping original"
+            debug "ffsubsync output: $sync_output" || true
         fi
     else
         warn "Sync failed — keeping unsynced version"
+        warn "ffsubsync error: $(echo "$sync_output" | tail -3)"
         rm -f "$synced"
     fi
+    # Clean up extracted reference subtitle
+    [[ -n "$ref_tmp" ]] && rm -f "$ref_tmp" || true
 }
 
 # Helper for auto-embed (embed srt into video, replace original)
@@ -2703,6 +2821,7 @@ cmd_embed() {
 
 # ── Command: autosync (ffsubsync - auto sync with video/audio) ───────────────
 AUTOSYNC_REF=""
+AUTOSYNC_REF_STREAM=""
 
 cmd_autosync() {
     [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
@@ -2733,26 +2852,50 @@ cmd_autosync() {
     info "Reference: $(basename "$AUTOSYNC_REF")"
 
     local ffsubsync_args=()
-    ffsubsync_args+=("$AUTOSYNC_REF")
-    ffsubsync_args+=(-i "$FILE_PATH")
-    ffsubsync_args+=(-o "$output")
+    local sync_ref="$AUTOSYNC_REF"
+    local ref_tmp=""
 
-    # If reference is SRT/ASS, use subtitle-to-subtitle mode
+    # If reference is SRT/ASS, use subtitle-to-subtitle mode directly
     case "$ref_ext" in
         srt|ass|ssa|vtt|sub)
             info "Mode: subtitle <-> subtitle"
             ;;
         *)
-            info "Mode: video <-> subtitle (audio extraction)"
+            info "Mode: video <-> subtitle"
+            # Auto-detect reference from -l/--lang if --ref-stream not set
+            # Prefer extracting embedded subtitle (accurate), fall back to audio (VAD)
+            if [[ -z "$AUTOSYNC_REF_STREAM" && -n "$LANG_TARGET" ]]; then
+                if ref_tmp=$(_extract_ref_subtitle "$AUTOSYNC_REF" "$LANG_TARGET"); then
+                    sync_ref="$ref_tmp"
+                    info "Extracted embedded subtitle ($LANG_TARGET) as reference"
+                else
+                    local stream_ref
+                    if stream_ref=$(_find_audio_stream "$AUTOSYNC_REF" "$LANG_TARGET"); then
+                        AUTOSYNC_REF_STREAM="$stream_ref"
+                        info "Auto-detected audio track: $stream_ref ($LANG_TARGET)"
+                    fi
+                fi
+            fi
+            # Add --reference-stream if specified (manual or audio fallback)
+            if [[ -n "$AUTOSYNC_REF_STREAM" ]]; then
+                ffsubsync_args+=(--reference-stream "$AUTOSYNC_REF_STREAM")
+                info "Reference stream: $AUTOSYNC_REF_STREAM"
+            fi
             ;;
     esac
+
+    ffsubsync_args+=("$sync_ref")
+    ffsubsync_args+=(-i "$FILE_PATH")
+    ffsubsync_args+=(-o "$output")
 
     if $ffsubsync_cmd "${ffsubsync_args[@]}" 2>&1; then
         log "Auto sync: $output"
     else
         err "ffsubsync failed"
+        [[ -n "$ref_tmp" ]] && rm -f "$ref_tmp"
         return 1
     fi
+    [[ -n "$ref_tmp" ]] && rm -f "$ref_tmp" || true
 }
 
 # ── Parse args ────────────────────────────────────────────────────────────────
@@ -2796,6 +2939,7 @@ parse_args() {
             --sub)         EMBED_SUB="$2"; shift 2 ;;
             --track)       EXTRACT_TRACK="$2"; shift 2 ;;
             --ref)         AUTOSYNC_REF="$2"; shift 2 ;;
+            --ref-stream)  AUTOSYNC_REF_STREAM="$2"; shift 2 ;;
             --force-translate) FORCE_TRANSLATE=true; shift ;;
             --keep-files)  KEEP_FILES=true; shift ;;
             --auto)        AUTO_SELECT=true; shift ;;
