@@ -35,10 +35,10 @@ SUBTITLE_URL=""
 
 # ── Modeles par defaut ────────────────────────────────────────────────────────
 MODEL_ZAI_CODEPLAN="glm-4.7"
-MODEL_OPENAI="gpt-4o"
-MODEL_CLAUDE="claude-sonnet-4-20250514"
-MODEL_MISTRAL="mistral-large-latest"
-MODEL_GEMINI="gemini-2.0-flash"
+MODEL_OPENAI="gpt-5-mini"
+MODEL_CLAUDE="claude-haiku-4-5"
+MODEL_MISTRAL="mistral-small-latest"
+MODEL_GEMINI="gemini-2.5-flash"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 log()    { { $QUIET && return; printf "${GREEN}[+]${NC} %s\n" "$*"; } || true; }
@@ -609,6 +609,11 @@ translate_with_google() {
         fi
     done < "$input" > "$output"
 
+    # Normalize: strip BOM + fix line endings to LF (ffmpeg chokes on mixed CRLF/LF and BOM)
+    if [[ -s "$output" ]]; then
+        sed -i '' -e '1s/^\xef\xbb\xbf//' -e $'s/\r$//' "$output"
+    fi
+
     # Cleanup
     rm -f "$text_file" "$map_file" "$translated_file"
 }
@@ -917,7 +922,8 @@ ${BOLD}OPTIONS${NC}
     --sub <fichier>           Fichier SRT pour embed dans une video
     --track <num>             Piste a extraire pour extract
     --url <url>               Telecharger un sous-titre depuis une URL opensubtitles.org
-    --embed                   Embed les sous-titres dans la video (auto mode)
+    --embed                   Embed les sous-titres dans la video (auto: actif par defaut)
+    --no-embed                Desactiver l'embed automatique
     --force-translate         Forcer la traduction meme si sous-titres trouves
     --auto                    Selectionner automatiquement le premier resultat
     --dry-run                 Afficher les resultats sans telecharger
@@ -1686,11 +1692,18 @@ cmd_auto() {
 
     local title_override="${SEARCH_QUERY:-}"
     local imdb_override="${IMDB_ID:-}"
-    local do_embed=$AUTO_EMBED
+    # Embed par defaut si ffmpeg est dispo (--no-embed pour desactiver)
+    local do_embed=true
+    if ! command -v ffmpeg &>/dev/null; then
+        do_embed=false
+    fi
+    # Override explicite
+    $AUTO_EMBED && do_embed=true
+    ${NO_EMBED:-false} && do_embed=false
 
     header "subtool auto"
     info "Langue cible: $target"
-    $do_embed && info "Embed: actif"
+    $do_embed && info "Embed: actif" || info "Embed: inactif (ffmpeg requis)"
 
     local success=0 fail=0 skip=0 total=0
 
@@ -1716,9 +1729,13 @@ cmd_auto() {
 
         local target_srt="${dir_name}/${name_no_ext}.${target}.srt"
 
-        # Already has target language subtitle?
-        if [[ -f "$target_srt" ]]; then
-            info "Skip (${target}.srt existe): $base_name"
+        # Already has target language subtitle? (skip only if non-empty)
+        if [[ -s "$target_srt" ]]; then
+            # Sync + embed even if subtitle already exists
+            _auto_sync "$video_file" "$target_srt"
+            if $do_embed; then
+                _auto_embed "$video_file" "$target_srt" "$target"
+            fi
             ((skip++)) || true
             continue
         fi
@@ -1768,7 +1785,8 @@ cmd_auto() {
                     log "Telecharge (${target}): $target_srt"
                     ((success++)) || true
                     # No translation needed, already in target language
-                    if $do_embed && command -v ffmpeg &>/dev/null; then
+                    _auto_sync "$video_file" "$target_srt"
+                    if $do_embed; then
                         _auto_embed "$video_file" "$target_srt" "$target"
                     fi
                     continue
@@ -1833,8 +1851,10 @@ cmd_auto() {
                 log "Traduit: $(basename "$target_srt")"
                 ((success++)) || true
 
-                # ── Step 4: Embed if requested ──
-                if $do_embed && command -v ffmpeg &>/dev/null; then
+                # ── Step 4: Sync with video ──
+                _auto_sync "$video_file" "$target_srt"
+                # ── Step 5: Embed if requested ──
+                if $do_embed; then
                     _auto_embed "$video_file" "$target_srt" "$target"
                 fi
                 continue
@@ -1855,24 +1875,62 @@ cmd_auto() {
     log "Total: $total | OK: $success | Skips: $skip | Echecs: $fail"
 }
 
-# Helper for auto-embed
+# Helper for auto-sync (sync subtitle with video via ffsubsync)
+_auto_sync() {
+    local video="$1" sub="$2"
+    # Determine ffsubsync command
+    local ffsubsync_cmd="ffsubsync"
+    if ! command -v ffsubsync &>/dev/null; then
+        if command -v uvx &>/dev/null; then
+            ffsubsync_cmd="uvx ffsubsync"
+            info "Utilisation de uvx ffsubsync"
+        else
+            warn "ffsubsync non disponible — skip sync. Installe: uvx ffsubsync"
+            return 0
+        fi
+    fi
+    local synced="${sub%.srt}.synced.srt"
+    info "Sync: $(basename "$sub") avec $(basename "$video")"
+    if $ffsubsync_cmd "$video" -i "$sub" -o "$synced" 2>/dev/null; then
+        if [[ -s "$synced" ]]; then
+            mv "$synced" "$sub"
+            log "Sync OK: $(basename "$sub")"
+        else
+            warn "Echec sync — fichier vide, on garde l'original"
+        fi
+    else
+        warn "Echec sync — on garde la version non-syncee"
+        rm -f "$synced"
+    fi
+}
+
+# Helper for auto-embed (embed srt into video, replace original)
 _auto_embed() {
     local video="$1" sub="$2" lang="$3"
-    local vbase vext
-    vbase=$(basename "$video" | sed 's/\.[^.]*$//')
-    vext="${video##*.}"
-    local out_dir
-    out_dir=$(dirname "$video")
-    local out_video="${out_dir}/${vbase}.subbed.${vext}"
-    info "Embed: $(basename "$sub") -> $(basename "$out_video")"
-    ffmpeg -v quiet -i "$video" -i "$sub" \
-        -c copy -c:s srt \
+    # Skip if video already has a subtitle stream
+    local existing_subs
+    existing_subs=$(ffprobe -v quiet -select_streams s -show_entries stream=index -of csv=p=0 "$video" 2>/dev/null || true)
+    if [[ -n "$existing_subs" ]]; then
+        info "Embed skip (sous-titres deja presents): $(basename "$video")"
+        return 0
+    fi
+    local vext="${video##*.}"
+    local tmp_video="${video%.${vext}}.tmp.${vext}"
+    # MP4/M4V need mov_text codec, MKV/others use srt
+    local sub_codec="srt"
+    case "$vext" in
+        mp4|m4v|mov) sub_codec="mov_text" ;;
+    esac
+    info "Embed: $(basename "$sub") -> $(basename "$video") (codec: $sub_codec)"
+    if ffmpeg -v quiet -i "$video" -i "$sub" \
+        -c copy -c:s "$sub_codec" \
         -metadata:s:s:0 language="$lang" \
-        "$out_video" -y 2>/dev/null
-    if [[ -s "$out_video" ]]; then
-        log "Video avec sous-titres: $out_video"
+        "$tmp_video" -y 2>/dev/null && [[ -s "$tmp_video" ]]; then
+        mv "$tmp_video" "$video"
+        log "Embed OK: $(basename "$video")"
     else
         warn "Echec embed: $(basename "$video")"
+        rm -f "$tmp_video"
     fi
 }
 
@@ -2556,6 +2614,7 @@ parse_args() {
             --force-translate) FORCE_TRANSLATE=true; shift ;;
             --auto)        AUTO_SELECT=true; shift ;;
             --embed)       AUTO_EMBED=true; shift ;;
+            --no-embed)    NO_EMBED=true; shift ;;
             --url)         SUBTITLE_URL="$2"; shift 2 ;;
             --dry-run)     DRY_RUN=true; shift ;;
             --json)        JSON_OUTPUT=true; QUIET=true; shift ;;

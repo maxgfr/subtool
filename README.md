@@ -37,6 +37,7 @@ sudo mv subtool /usr/local/bin/
 
 - `jq` — JSON parsing
 - `curl` — HTTP requests
+- `translate-shell` — Google Translate CLI (default translation provider). Install: `brew install translate-shell`
 - `ffmpeg` / `ffprobe` (optional) — extract/embed subtitles, video analysis
 - `ffsubsync` (optional) — auto-sync subtitles with video. Runs automatically via `uvx` if [uv](https://docs.astral.sh/uv/) is installed, or install permanently with `uv tool install ffsubsync`
 
@@ -77,10 +78,10 @@ subtool get -q "Breaking Bad S05E14" -l en
 # Batch download a full season
 subtool batch -q "Dark S01" -l en
 
-# Auto mode: download + translate + optionally embed — one command
-subtool auto --dir ~/Movies/Die.Discounter -l fr               # translate existing subs
-subtool auto --dir ~/Movies/Die.Discounter -l fr --embed        # + embed into video
+# Auto mode: download + translate + sync + embed — one command
+subtool auto --dir ~/Movies/Die.Discounter -l fr               # all-in-one
 subtool auto -f movie.mkv -l fr                                 # single file
+subtool auto --dir ~/Movies/Die.Discounter -l fr --no-embed     # skip embed
 
 # Scan a folder and auto-download subtitles for all videos
 subtool scan --dir ~/Movies/Die.Discounter -l fr
@@ -134,7 +135,10 @@ subtool check
 |---|---|
 | `--auto` | Auto-select first result (no interactive prompt) |
 | `--dry-run` | Show results without downloading |
-| `--dir <path>` | Directory to scan for video files (used with `scan`) |
+| `--dir <path>` | Directory to scan for video files (used with `scan`, `auto`) |
+| `--embed` | Force embed subtitles into video (default in `auto` if ffmpeg available) |
+| `--no-embed` | Disable auto-embed in `auto` mode |
+| `--url <url>` | Provide a subtitle URL directly for download |
 | `--json` | Output results as JSON (implies `--quiet`) |
 | `--verbose` | Show debug output |
 | `--quiet` | Suppress informational messages |
@@ -164,7 +168,7 @@ subtool sources                   # List subtitle sources
 subtool check                     # Diagnostic: deps, config
 ```
 
-subtool works out of the box — no API keys needed for downloading subtitles or for translation with `claude-code` (default provider).
+subtool works out of the box — no API keys needed for downloading or translating subtitles. The default translation provider is Google Translate via `translate-shell`.
 
 Optional API keys for other AI translation providers are stored in `~/.config/subtool/config`:
 
