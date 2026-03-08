@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 SCRIPT_NAME="$(basename "$0")"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/subtool"
 CONFIG_FILE="$CONFIG_DIR/config"
