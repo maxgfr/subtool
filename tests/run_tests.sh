@@ -705,6 +705,123 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "detect_lang (unit tests)"
+
+# Source internal functions for direct testing
+_detect_lang_test() {
+    local expected="$1" sample="$2" desc="$3"
+    # Extract detect_lang + _detect_lang_offline from script
+    local result
+    result=$(bash -c "
+        set -euo pipefail
+        CACHE_DIR='$TMP_DIR'
+        $(sed -n '/^detect_lang()/,/^}/p; /^_detect_lang_offline()/,/^}/p' "$SUBSYNC")
+        detect_lang \"\$1\"
+    " -- "$sample" 2>/dev/null) || true
+    if [[ "$result" == "$expected" ]]; then
+        assert "$desc" 0
+    else
+        assert "$desc (expected=$expected got=${result:-[none]})" 1
+    fi
+}
+
+# ── via translate-shell (online, uses Google API) ──
+if command -v trans &>/dev/null; then
+    _detect_lang_test "en" "The thing is, you should have been there before they could even think about what would happen" \
+        "detect_lang: English"
+    _detect_lang_test "fr" "Nous avons fait cette chose avec vous dans cette maison mais elle était très bien sans rien" \
+        "detect_lang: French"
+    _detect_lang_test "de" "Ich bin nicht sicher ob wir das machen können aber wenn wir auch noch etwas haben dann ist alles gut" \
+        "detect_lang: German"
+    _detect_lang_test "es" "Pero esto no tiene nada aquí porque nosotros siempre estamos aquí cuando todos vamos después" \
+        "detect_lang: Spanish"
+    _detect_lang_test "it" "Questo è stato fatto bene, sono ancora qui dopo tutto, abbiamo qualcosa di molto proprio grazie" \
+        "detect_lang: Italian"
+    _detect_lang_test "pt" "Ele disse isso para ela quando ainda agora estou aqui porque também tenho muito obrigado" \
+        "detect_lang: Portuguese"
+    _detect_lang_test "ru" "Это было очень хорошо когда она сказала что все уже сейчас здесь потому что они тоже" \
+        "detect_lang: Russian"
+    _detect_lang_test "pl" "Nie wiem dlaczego tak się dzieje ale już teraz muszę tutaj zostać bo właśnie wszystko" \
+        "detect_lang: Polish"
+    _detect_lang_test "nl" "Het is niet goed dat hij daar was met zijn moeder want zij hebben geen waar ook heel" \
+        "detect_lang: Dutch"
+    _detect_lang_test "ja" "これは日本語のテストです ありがとう さようなら" \
+        "detect_lang: Japanese"
+    _detect_lang_test "ko" "이것은 한국어 테스트입니다 감사합니다" \
+        "detect_lang: Korean"
+    _detect_lang_test "zh" "这是中文测试 你好 谢谢 我们 他们 大家" \
+        "detect_lang: Chinese"
+    _detect_lang_test "ar" "هذا اختبار باللغة العربية شكرا جزيلا" \
+        "detect_lang: Arabic"
+    _detect_lang_test "sv" "Det var inte bra att han bara var här med alla från efter något mycket aldrig alltid" \
+        "detect_lang: Swedish"
+    _detect_lang_test "da" "Det er ikke godt men han har alle her fra efter bare hvad hvor aldrig altid noget tak" \
+        "detect_lang: Danish"
+    _detect_lang_test "fi" "Hän ei ole nyt vain tämä kun mutta myös niin aina koskaan ehkä paljon kiitos anteeksi minä sinä" \
+        "detect_lang: Finnish"
+    _detect_lang_test "tr" "Ben bir şey için burada çok güzel ama sen neden şimdi hiç yok belki tamam teşekkür" \
+        "detect_lang: Turkish"
+else
+    printf "  ${YELLOW}SKIP${NC}  detect_lang online: trans not installed\n"
+fi
+
+# ── From real SRT fixtures ──
+if command -v trans &>/dev/null; then
+    de_sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$FIXTURES/basic.srt" | head -20 | tr '\n' ' ')
+    _detect_lang_test "de" "$de_sample" "detect_lang: basic.srt -> German"
+
+    fr_sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$FIXTURES/basic_fr.srt" | head -20 | tr '\n' ' ')
+    _detect_lang_test "fr" "$fr_sample" "detect_lang: basic_fr.srt -> French"
+fi
+
+# ── Offline fallback (direct call to _detect_lang_offline) ──
+_detect_lang_offline_test() {
+    local expected="$1" sample="$2" desc="$3"
+    local result
+    result=$(bash -c "
+        set -euo pipefail
+        $(sed -n '/^_detect_lang_offline()/,/^}/p' "$SUBSYNC")
+        _detect_lang_offline \"\$1\"
+    " -- "$sample" 2>/dev/null) || true
+    if [[ "$result" == "$expected" ]]; then
+        assert "$desc" 0
+    else
+        assert "$desc (expected=$expected got=${result:-[none]})" 1
+    fi
+}
+
+_detect_lang_offline_test "en" "The thing is, you should have been there before they could even think about what would happen" \
+    "offline fallback: English"
+_detect_lang_offline_test "fr" "Nous avons fait cette chose avec vous dans cette maison mais elle était très bien sans rien" \
+    "offline fallback: French"
+_detect_lang_offline_test "de" "Ich bin nicht sicher ob wir das machen können aber wenn wir auch noch etwas haben dann ist alles gut" \
+    "offline fallback: German"
+_detect_lang_offline_test "es" "Pero esto no tiene nada aquí porque nosotros siempre estamos aquí cuando todos vamos después" \
+    "offline fallback: Spanish"
+_detect_lang_offline_test "it" "Questo è stato fatto bene, sono ancora qui dopo tutto, abbiamo qualcosa di molto proprio grazie" \
+    "offline fallback: Italian"
+_detect_lang_offline_test "pt" "Ele disse isso para ela quando ainda agora estou aqui porque também tenho muito obrigado" \
+    "offline fallback: Portuguese"
+_detect_lang_offline_test "ru" "Это было очень хорошо когда она сказала что все уже сейчас здесь потому что они тоже" \
+    "offline fallback: Russian"
+_detect_lang_offline_test "pl" "Nie wiem dlaczego tak się dzieje ale już teraz muszę tutaj zostać bo właśnie wszystko" \
+    "offline fallback: Polish"
+_detect_lang_offline_test "nl" "Het is niet goed dat hij daar was met zijn moeder want zij hebben geen waar ook heel" \
+    "offline fallback: Dutch"
+_detect_lang_offline_test "fi" "Hän ei ole nyt vain tämä kun mutta myös niin aina koskaan ehkä paljon kiitos anteeksi minä sinä" \
+    "offline fallback: Finnish"
+_detect_lang_offline_test "tr" "Ben bir şey için burada çok güzel ama sen neden şimdi hiç yok belki tamam teşekkür" \
+    "offline fallback: Turkish"
+_detect_lang_offline_test "sv" "Det var inte bra att han bara var här med alla från efter något mycket aldrig alltid" \
+    "offline fallback: Swedish"
+
+# ── Edge cases ──
+_detect_lang_offline_test "" "hello world" \
+    "offline fallback: too short -> empty"
+_detect_lang_offline_test "" "123 456 --> 789" \
+    "offline fallback: numbers only -> empty"
+
+# ══════════════════════════════════════════════════════════════════════════════
 # RESULTS
 # ══════════════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}══════════════════════════════════════════${NC}\n"

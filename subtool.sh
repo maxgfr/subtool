@@ -76,16 +76,91 @@ api_retry() {
     return 1
 }
 
-# Detect language from subtitle text
+# Detect language from subtitle text via translate-shell (Google API), with offline fallback
 detect_lang() {
     local sample="$1"
-    if echo "$sample" | grep -qiE '\b(the|and|is|are|you|that|this|have|with)\b'; then echo "en"
-    elif echo "$sample" | grep -qiE '\b(le|la|les|des|est|une|que|pas|avec|dans)\b'; then echo "fr"
-    elif echo "$sample" | grep -qiE '\b(der|die|das|und|ist|ein|nicht|ich|mit|auf)\b'; then echo "de"
-    elif echo "$sample" | grep -qiE '\b(el|la|los|las|que|del|una|por|con|para)\b'; then echo "es"
-    elif echo "$sample" | grep -qiE '\b(il|la|che|non|per|una|con|sono|del|questo)\b'; then echo "it"
-    elif echo "$sample" | grep -qiE '\b(o|que|de|da|em|um|uma|com|para|por)\b'; then echo "pt"
+    [[ -z "$sample" ]] && return
+
+    # Primary: use translate-shell (Google Translate API, already a required dependency)
+    if command -v trans &>/dev/null; then
+        local detected=""
+        detected=$(trans -id -no-ansi "$sample" 2>/dev/null | grep "^Code" | awk '{print $2}') || true
+        if [[ -n "$detected" && "$detected" != "null" ]]; then
+            # Normalize regional variants (pt-BR -> pt, zh-CN -> zh, etc.)
+            detected="${detected%%-*}"
+            echo "$detected"
+            return
+        fi
     fi
+
+    # Fallback: offline scoring (no network / trans unavailable)
+    _detect_lang_offline "$sample"
+}
+
+# Offline language detection fallback (scoring-based)
+_detect_lang_offline() {
+    local sample="$1"
+    local all_langs="en fr de es it pt ru pl nl sv da no fi tr"
+
+    # Special characters (weight=3)
+    local -A char_patterns=(
+        [de]='ß|ü|Ü'
+        [fr]='[àâ]|[éèêë]|[ùû]|[îï]|œ|«|»'
+        [es]='ñ|¿|¡'
+        [pt]='[ãõ]'
+        [it]='[ìòù]'
+        [pl]='[ąćęłńóśźż]|[ĄĆĘŁŃÓŚŹŻ]'
+        [sv]='[åÅ]'
+        [da]='[æøÆØ]'
+        [no]='[æøåÆØÅ]'
+        [fi]='ää|öö'
+        [tr]='[şŞğĞıİ]|[çÇ]'
+        [ru]='[а-яА-ЯёЁ]'
+    )
+
+    # Distinctive words (weight=1)
+    local -A word_patterns=(
+        [en]='\b(the|you|and|this|that|have|with|what|would|there|been|they|your|just|like|about|know|could|should|where|their|because|which|into|before|after|between|those|these|very|when|will|than|only|other|were|them|then|also|going|really|right|think|want|doesn|didn|can|our|she|his|her)\b'
+        [fr]='\b(nous|vous|avec|dans|cette|mais|sont|pour|tout|elle|elles|aussi|comme|fait|avoir|être|même|encore|alors|rien|bien|très|peut|sans|faire|quel|dont|leur|quoi|jamais|toujours|après|avant|parce|depuis|comment|pourquoi|personne|quelque|maintenant|seulement)\b'
+        [de]='\b(ich|und|nicht|sich|auch|noch|wir|wenn|aber|dann|schon|wird|haben|kann|mein|dein|hier|dass|jetzt|immer|wieder|diese|keine|doch|sein|nach|beim|einen|einem|einer|alles|warum|nichts|etwas|vielleicht|natürlich|zwischen|müssen|können|werden|wollen|sollen)\b'
+        [es]='\b(pero|esto|tiene|muy|todo|están|porque|aquí|ahora|siempre|nunca|también|puede|hacer|ellos|nosotros|ustedes|bueno|cuando|donde|quien|nada|algo|mucho|todos|todas|después|antes|quiero|puedo|tengo|creo|estoy|vamos|verdad|entonces)\b'
+        [it]='\b(sono|questo|anche|loro|della|quello|tutto|perché|dove|quando|ancora|sempre|fatto|stato|bene|dopo|prima|adesso|niente|qualcosa|troppo|proprio|siamo|abbiamo|voglio|posso|stai|cosa|allora|grazie|senza|ogni|deve|hanno)\b'
+        [pt]='\b(isso|ele|ela|tem|muito|quando|ainda|agora|aqui|todo|todos|porque|depois|antes|sempre|nunca|nada|algo|mesmo|nossa|nosso|vocês|fazer|pode|obrigado|então|também|tudo|onde|quem|estou|tenho|acho|preciso)\b'
+        [ru]='\b(что|это|как|так|все|они|мне|его|она|было|уже|мой|тебя|если|нет|вот|тут|есть|был|еще|тоже|только|когда|потому|может|будет|надо|знаю|ничего|очень|сейчас|здесь|почему|хорошо|ладно|давай|пожалуйста|спасибо|никогда|всегда)\b'
+        [pl]='\b(jest|nie|tak|ale|jak|się|czy|już|jeszcze|tylko|tutaj|teraz|kiedy|dlaczego|gdzie|zawsze|nigdy|może|muszę|bardzo|dobrze|proszę|dzięki|wszystko|nic|ktoś|coś|trochę|właśnie|naprawdę|chcę|wiem|myślę|przepraszam|zobaczmy)\b'
+        [nl]='\b(het|een|van|dat|zijn|niet|met|wat|maar|ook|als|nog|wel|naar|hij|zij|dit|werd|hebben|deze|hun|zou|waar|daar|moet|goed|geen|hier|toen|heel|waarom|alles|niets|altijd|nooit|misschien|kunnen|willen|moeten|omdat)\b'
+        [sv]='\b(det|att|och|den|som|har|inte|med|för|var|kan|ska|vill|han|hon|alla|från|efter|bara|här|där|mycket|aldrig|alltid|varför|redan|sedan|kanske|ganska|också|igen|något|ingenting|behöver|gärna|tack)\b'
+        [da]='\b(det|og|har|ikke|med|den|som|kan|han|hun|vil|skal|var|fra|her|der|men|alle|efter|bare|hvad|hvor|hvorfor|aldrig|altid|noget|ingenting|måske|også|igen|allerede|fordi|godt|meget|lidt|velkommen|tak)\b'
+        [no]='\b(det|og|har|ikke|med|den|som|kan|han|hun|vil|skal|var|fra|her|der|men|alle|etter|bare|hva|hvor|hvorfor|aldri|alltid|kanskje|også|igjen|allerede|fordi|veldig|mye|litt|velkommen|takk|noen|noe|ingenting)\b'
+        [fi]='\b(hän|mutta|niin|myös|vain|tämä|nyt|kun|jos|tai|ovat|ole|miksi|missä|sitten|vielä|aina|koskaan|ehkä|hyvin|paljon|kiitos|anteeksi|tiedän|haluan|pitää|minun|sinun|meidän|täällä|siellä|kaikki|mitään|jotain|mikään|olet|olen|emme|eivät|minä|sinä|hyvä|pois|heitä|meillä|heillä|tämän|tuolla|täytyy|tarpeeksi|ymmärrän)\b'
+        [tr]='\b(bir|ben|sen|biz|siz|var|yok|ama|için|ile|gibi|daha|çok|kadar|sonra|önce|şimdi|burada|orada|neden|nasıl|nerede|zaman|hiç|hep|belki|tamam|teşekkür|lütfen|evet|hayır|bence|iyi|kötü|güzel)\b'
+    )
+
+    local -A scores
+    local lang
+    for lang in $all_langs; do scores[$lang]=0; done
+
+    local count
+    for lang in $all_langs; do
+        [[ -z "${char_patterns[$lang]:-}" ]] && continue
+        count=$(echo "$sample" | grep -oE "${char_patterns[$lang]}" 2>/dev/null | wc -l) || true
+        scores[$lang]=$(( ${scores[$lang]} + (count + 0) * 3 ))
+    done
+
+    for lang in $all_langs; do
+        count=$(echo "$sample" | grep -oiE "${word_patterns[$lang]}" 2>/dev/null | wc -l) || true
+        scores[$lang]=$(( ${scores[$lang]} + (count + 0) ))
+    done
+
+    local best_lang="" best_score=0
+    for lang in $all_langs; do
+        if [[ ${scores[$lang]} -gt $best_score ]]; then
+            best_score=${scores[$lang]}
+            best_lang="$lang"
+        fi
+    done
+
+    [[ $best_score -ge 3 ]] && echo "$best_lang"
 }
 
 # Validate SRT format (returns 0 if valid, 1 if broken)
@@ -181,7 +256,7 @@ search_opensubtitles_org() {
     local url="https://rest.opensubtitles.org/search/query-${encoded_query}/sublanguageid-${lang3}"
 
     local resp
-    resp=$(curl -sf "$url" -H "User-Agent: subtool v${VERSION}" 2>/dev/null) || return 1
+    resp=$(api_retry curl -sf "$url" -H "User-Agent: subtool v${VERSION}") || return 1
 
     local count
     count=$(echo "$resp" | jq 'length' 2>/dev/null) || true
@@ -320,7 +395,7 @@ search_podnapisi() {
     encoded_query=$(urlencode "$query")
 
     local resp
-    resp=$(curl -sf "https://www.podnapisi.net/subtitles/search/old?keywords=$encoded_query&language=$lang_code&output_type=json" 2>/dev/null) || return 1
+    resp=$(api_retry curl -sf "https://www.podnapisi.net/subtitles/search/old?keywords=$encoded_query&language=$lang_code&output_type=json") || return 1
 
     local count
     count=$(echo "$resp" | jq '.subtitles | length' 2>/dev/null)
@@ -414,7 +489,7 @@ select_subtitle() {
             echo "${entries[$j]}"
         done
         printf ']\n'
-        return 1  # don't proceed to download in JSON mode
+        return 0  # don't proceed to download in JSON mode
     fi
 
     # Auto-select first result
@@ -612,7 +687,11 @@ translate_with_google() {
 
     # Normalize: strip BOM + fix line endings to LF (ffmpeg chokes on mixed CRLF/LF and BOM)
     if [[ -s "$output" ]]; then
-        sed -i '' -e '1s/^\xef\xbb\xbf//' -e $'s/\r$//' "$output"
+        if [[ "$(uname)" == "Darwin" ]]; then
+            sed -i '' -e '1s/^\xef\xbb\xbf//' -e $'s/\r$//' "$output"
+        else
+            sed -i -e '1s/^\xef\xbb\xbf//' -e $'s/\r$//' "$output"
+        fi
     fi
 
     # Cleanup
@@ -634,9 +713,13 @@ translate_with_claude_code() {
     local content
     content=$(<"$input")
 
-    CLAUDECODE='' claude -p --model "$model" --effort low --tools "" "$prompt
-
-$content" > "$output" 2>/dev/null
+    local full_input
+    full_input=$(printf '%s\n\n%s' "$prompt" "$content")
+    CLAUDECODE='' claude -p --model "$model" --effort low --tools "" "$full_input" > "$output" 2>/dev/null || {
+        err "Claude Code translation failed"
+        return 1
+    }
+    [[ -s "$output" ]] || { err "Claude Code produced empty output"; return 1; }
 }
 
 translate_with_zai_codeplan() {
@@ -649,7 +732,7 @@ translate_with_zai_codeplan() {
     prompt=$(_translate_prompt "$src_lang" "$target_lang")
 
     local resp
-    resp=$(curl -sf "https://api.z.ai/api/coding/paas/v4/chat/completions" \
+    resp=$(api_retry curl -sf "https://api.z.ai/api/coding/paas/v4/chat/completions" \
         -H "Authorization: Bearer $ZAI_API_KEY" \
         -H "Content-Type: application/json" \
         -d "{
@@ -659,7 +742,7 @@ translate_with_zai_codeplan() {
                 {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ],
             \"temperature\": 0.3
-        }" 2>/dev/null) || { err "Z.ai API error"; return 1; }
+        }") || { err "Z.ai API error"; return 1; }
 
     echo "$resp" | jq -r '.choices[0].message.content' > "$output"
 }
@@ -677,7 +760,7 @@ translate_with_openai() {
     escaped_content=$(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)
 
     local resp
-    resp=$(curl -sf "https://api.openai.com/v1/chat/completions" \
+    resp=$(api_retry curl -sf "https://api.openai.com/v1/chat/completions" \
         -H "Authorization: Bearer $OPENAI_API_KEY" \
         -H "Content-Type: application/json" \
         -d "{
@@ -687,7 +770,7 @@ translate_with_openai() {
                 {\"role\": \"user\", \"content\": $escaped_content}
             ],
             \"temperature\": 0.3
-        }" 2>/dev/null) || { err "OpenAI API error"; return 1; }
+        }") || { err "OpenAI API error"; return 1; }
 
     echo "$resp" | jq -r '.choices[0].message.content' > "$output"
 }
@@ -702,7 +785,7 @@ translate_with_claude() {
     prompt=$(_translate_prompt "$src_lang" "$target_lang")
 
     local resp
-    resp=$(curl -sf "https://api.anthropic.com/v1/messages" \
+    resp=$(api_retry curl -sf "https://api.anthropic.com/v1/messages" \
         -H "x-api-key: $ANTHROPIC_API_KEY" \
         -H "anthropic-version: 2023-06-01" \
         -H "Content-Type: application/json" \
@@ -712,7 +795,7 @@ translate_with_claude() {
             \"messages\": [
                 {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ]
-        }" 2>/dev/null) || { err "Claude API error"; return 1; }
+        }") || { err "Claude API error"; return 1; }
 
     echo "$resp" | jq -r '.content[0].text' > "$output"
 }
@@ -727,7 +810,7 @@ translate_with_mistral() {
     prompt=$(_translate_prompt "$src_lang" "$target_lang")
 
     local resp
-    resp=$(curl -sf "https://api.mistral.ai/v1/chat/completions" \
+    resp=$(api_retry curl -sf "https://api.mistral.ai/v1/chat/completions" \
         -H "Authorization: Bearer $MISTRAL_API_KEY" \
         -H "Content-Type: application/json" \
         -d "{
@@ -736,7 +819,7 @@ translate_with_mistral() {
                 {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ],
             \"temperature\": 0.3
-        }" 2>/dev/null) || { err "Mistral API error"; return 1; }
+        }") || { err "Mistral API error"; return 1; }
 
     echo "$resp" | jq -r '.choices[0].message.content' > "$output"
 }
@@ -751,14 +834,14 @@ translate_with_gemini() {
     prompt=$(_translate_prompt "$src_lang" "$target_lang")
 
     local resp
-    resp=$(curl -sf "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
+    resp=$(api_retry curl -sf "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$GEMINI_API_KEY" \
         -H "Content-Type: application/json" \
         -d "{
             \"contents\": [{
                 \"parts\": [{\"text\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}]
             }],
             \"generationConfig\": {\"temperature\": 0.3}
-        }" 2>/dev/null) || { err "Gemini API error"; return 1; }
+        }") || { err "Gemini API error"; return 1; }
 
     echo "$resp" | jq -r '.candidates[0].content.parts[0].text' > "$output"
 }
@@ -816,22 +899,27 @@ translate_subtitle() {
                     pids+=($!)
                 done
 
-                # Wait for batch to finish
+                # Wait for batch to finish, track failures
+                local chunk_failures=0
                 for pid in "${pids[@]}"; do
-                    wait "$pid" || true
+                    wait "$pid" || ((chunk_failures++)) || true
                 done
+                [[ $chunk_failures -gt 0 ]] && warn "$chunk_failures chunk(s) failed in this batch"
             done
 
             # Reassemble in order
+            local total_failures=0
             for ((i=0; i<num_chunks; i++)); do
                 local chunk_out="$CACHE_DIR/chunk_${i}_translated.srt"
                 if [[ -s "$chunk_out" ]]; then
                     cat "$chunk_out" >> "$output"
                 else
                     warn "Chunk $((i+1)) empty, skip"
+                    ((total_failures++)) || true
                 fi
                 rm -f "$CACHE_DIR/chunk_${i}.srt" "$chunk_out"
             done
+            [[ $total_failures -gt 0 ]] && warn "Total: $total_failures/$num_chunks chunks failed"
         fi
     fi
 
@@ -1029,8 +1117,11 @@ cmd_config() {
         local key="$CONFIG_KEY" value="$CONFIG_VALUE"
         [[ -z "$key" ]] && die "Usage: subtool config set <KEY> <VALUE>"
         # Update or add the key
+        # Escape value for safe sed replacement (handle |, \, &, /)
+        local escaped_value
+        escaped_value=$(printf '%s\n' "$value" | sed -e 's/[|\\&/]/\\&/g')
         if grep -q "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
-            sed -i.bak "s|^${key}=.*|${key}=\"${value}\"|" "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
+            sed -i.bak "s|^${key}=.*|${key}=\"${escaped_value}\"|" "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
         else
             echo "${key}=\"${value}\"" >> "$CONFIG_FILE"
         fi
@@ -1232,6 +1323,21 @@ show_parsed() {
 
 # ── Command: get (smart) ─────────────────────────────────────────────────────
 cmd_get() {
+    # Direct URL download mode
+    if [[ -n "${SUBTITLE_URL:-}" ]]; then
+        [[ -z "$LANG_TARGET" ]] && die "Specify --lang or -l <code>"
+        local safe_name="subtitle_url_$$"
+        local output="${OUTPUT_DIR}/${safe_name}.${LANG_TARGET}.srt"
+        header "subtool get (URL)"
+        info "URL: $SUBTITLE_URL"
+        if download_from_url "$SUBTITLE_URL" "$output"; then
+            log "Saved: $output"
+            return 0
+        else
+            die "Download failed from URL: $SUBTITLE_URL"
+        fi
+    fi
+
     [[ -z "$SEARCH_QUERY" && -z "$IMDB_ID" ]] && die "Specify --query or -q <title>"
     [[ -z "$LANG_TARGET" ]] && die "Specify --lang or -l <code>"
 
@@ -1260,25 +1366,21 @@ cmd_get() {
     info "Language: $LANG_TARGET"
     printf "\n"
 
+    # Sync parsed values back to globals (used by cmd_search/cmd_batch)
+    SEARCH_QUERY="$PARSED_TITLE"
+    IMDB_ID="$PARSED_IMDB"
+    SEASON="$PARSED_SEASON"
+    EPISODE="$PARSED_EPISODE"
+
     # Route to the correct mode
     case "$PARSED_MODE" in
         movie|episode)
-            SEARCH_QUERY="$PARSED_TITLE"
-            IMDB_ID="$PARSED_IMDB"
-            SEASON="$PARSED_SEASON"
-            EPISODE="$PARSED_EPISODE"
             cmd_search
             ;;
         season)
-            SEARCH_QUERY="$PARSED_TITLE"
-            IMDB_ID="$PARSED_IMDB"
-            SEASON="$PARSED_SEASON"
             cmd_batch
             ;;
         range)
-            SEARCH_QUERY="$PARSED_TITLE"
-            IMDB_ID="$PARSED_IMDB"
-            SEASON="$PARSED_SEASON"
 
             local start_ep="$PARSED_EPISODE"
             local end_ep="$PARSED_EP_END"
@@ -1700,7 +1802,7 @@ cmd_auto() {
     fi
     # Explicit override
     $AUTO_EMBED && do_embed=true
-    ${NO_EMBED:-false} && do_embed=false
+    [[ "${NO_EMBED:-false}" == "true" ]] && do_embed=false
 
     header "subtool auto"
     info "Target language: $target"
