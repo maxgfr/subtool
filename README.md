@@ -54,10 +54,10 @@ sudo mv subtool /usr/local/bin/
 | Provider | ID | Default Model | Description |
 |---|---|---|---|
 | **Claude Code** | `claude-code` | `haiku` | Claude Code CLI (effort low). No API key required. |
-| **OpenAI** | `openai` | `gpt-4o` | OpenAI Chat Completions API |
-| **Claude API** | `claude` | `claude-sonnet-4-20250514` | Anthropic Messages API |
-| **Mistral** | `mistral` | `mistral-large-latest` | Mistral AI API |
-| **Gemini** | `gemini` | `gemini-2.0-flash` | Google Gemini API |
+| **OpenAI** | `openai` | `gpt-5-mini` | OpenAI Chat Completions API |
+| **Claude API** | `claude` | `claude-haiku-4-5` | Anthropic Messages API |
+| **Mistral** | `mistral` | `mistral-small-latest` | Mistral AI API |
+| **Gemini** | `gemini` | `gemini-2.5-flash` | Google Gemini API |
 
 ```bash
 # Default: Google Translate (fast)
@@ -71,19 +71,19 @@ subtool translate -f subs.srt -l fr -p openai
 ## Usage
 
 ```bash
-# Download subtitles
-subtool get -q "Inception 2010" -l fr
-subtool get -q "Breaking Bad S05E14" -l en
-
-# Batch download a full season
-subtool batch -q "Dark S01" -l en
-
 # Auto mode: download + translate + sync + embed — one command
 subtool auto --dir ~/Movies/Die.Discounter -l fr               # all-in-one (Google Translate)
 subtool auto --dir ~/Movies/Die.Discounter -l fr -p claude-code # use Claude for translation
 subtool auto --dir ~/Movies/Die.Discounter -l fr -p openai      # use OpenAI for translation
 subtool auto -f movie.mkv -l fr                                 # single file
 subtool auto --dir ~/Movies/Die.Discounter -l fr --no-embed     # skip embed
+
+# Download subtitles
+subtool get -q "Inception 2010" -l fr
+subtool get -q "Breaking Bad S05E14" -l en
+
+# Batch download a full season
+subtool batch -q "Dark S01" -l en
 
 # Scan a folder and auto-download subtitles for all videos
 subtool scan --dir ~/Movies/Die.Discounter -l fr

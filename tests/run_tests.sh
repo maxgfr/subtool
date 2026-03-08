@@ -336,7 +336,7 @@ section "Smart parsing (get)"
 test_parse() {
     local query="$1" expected_mode="$2" expected_title="${3:-}" expected_season="${4:-}" expected_ep="${5:-}" expected_ep_end="${6:-}" expected_imdb="${7:-}"
     local out
-    out=$("$SUBSYNC" get -q "$query" -l fr --sources "" 2>&1 || true)
+    out=$("$SUBSYNC" get -q "$query" -l fr --sources "" -o "$TMP_DIR" 2>&1 || true)
 
     local ok=true desc="parse: \"$query\""
 
@@ -642,10 +642,10 @@ assert_output_contains "autosync fichier inexistant -> erreur" "$out" "introuvab
 
 # autosync sans ffsubsync -> message uvx ou fallback uvx
 if ! command -v ffsubsync &>/dev/null && ! command -v uvx &>/dev/null; then
-    out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" 2>&1 || true)
+    out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 || true)
     assert_output_contains "autosync sans ffsubsync ni uvx -> erreur" "$out" "uvx ffsubsync|uv tool install"
 elif ! command -v ffsubsync &>/dev/null && command -v uvx &>/dev/null; then
-    out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" 2>&1 || true)
+    out=$("$SUBSYNC" autosync -f "$FIXTURES/basic.srt" --ref "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 || true)
     assert_output_contains "autosync via uvx: fallback detecte" "$out" "uvx"
 else
     printf "  ${YELLOW}SKIP${NC}  autosync sans ffsubsync: ffsubsync est installe\n"

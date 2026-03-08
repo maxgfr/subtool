@@ -27,6 +27,7 @@ MAX_EPISODE=20
 AI_MODEL=""
 AUTO_SELECT=false
 AUTO_EMBED=false
+NO_EMBED=false
 DRY_RUN=false
 JSON_OUTPUT=false
 VERBOSE=false
@@ -146,10 +147,10 @@ load_config() {
     # Restaurer les modeles par defaut si le config les a mis a vide
     [[ -z "${MODEL_CLAUDE_CODE:-}" ]] && MODEL_CLAUDE_CODE="haiku"
     [[ -z "$MODEL_ZAI_CODEPLAN" ]] && MODEL_ZAI_CODEPLAN="glm-4.7"
-    [[ -z "$MODEL_OPENAI" ]] && MODEL_OPENAI="gpt-4o"
-    [[ -z "$MODEL_CLAUDE" ]] && MODEL_CLAUDE="claude-sonnet-4-20250514"
-    [[ -z "$MODEL_MISTRAL" ]] && MODEL_MISTRAL="mistral-large-latest"
-    [[ -z "$MODEL_GEMINI" ]] && MODEL_GEMINI="gemini-2.0-flash"
+    [[ -z "$MODEL_OPENAI" ]] && MODEL_OPENAI="gpt-5-mini"
+    [[ -z "$MODEL_CLAUDE" ]] && MODEL_CLAUDE="claude-haiku-4-5"
+    [[ -z "$MODEL_MISTRAL" ]] && MODEL_MISTRAL="mistral-small-latest"
+    [[ -z "$MODEL_GEMINI" ]] && MODEL_GEMINI="gemini-2.5-flash"
     AI_PROVIDER="${DEFAULT_AI_PROVIDER:-google}"
 }
 
