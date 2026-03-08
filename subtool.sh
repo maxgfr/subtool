@@ -1794,7 +1794,6 @@ cmd_auto() {
             fi
 
             # Try all fallback languages
-            local fb_downloaded=false
             IFS=',' read -ra fb_langs <<< "$FALLBACK_LANGS"
             for fl in "${fb_langs[@]}"; do
                 fl=$(echo "$fl" | tr -d ' ')
@@ -1808,7 +1807,6 @@ cmd_auto() {
                         log "Telecharge ($fl): $(basename "$dl_path")"
                         existing_srt="$dl_path"
                         existing_lang="$fl"
-                        fb_downloaded=true
                         break
                     fi
                 fi
@@ -2578,6 +2576,7 @@ CONFIG_SUBCMD=""
 CONFIG_KEY=""
 CONFIG_VALUE=""
 
+# shellcheck disable=SC2034
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
