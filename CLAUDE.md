@@ -7,7 +7,7 @@ Single bash script (`subtool.sh`, ~2670 lines) for subtitle management: download
 ## Architecture
 
 - **One file**: `subtool.sh` — everything is in this script
-- **Config**: `~/.config/subtool/config` (API keys, defaults)
+- **Config**: `~/.config/subtool/config` (API keys, `DEFAULT_LANG`, defaults)
 - **Cache**: `~/.cache/subtool/` (temp files, chunks)
 - **Tests**: `tests/run_tests.sh` + `tests/fixtures/`
 
@@ -18,7 +18,7 @@ Single bash script (`subtool.sh`, ~2670 lines) for subtitle management: download
 - **OpenSubtitles.org** (`rest.opensubtitles.org`) — free, no API key. Default source. Queries must be lowercase. Server-side season/episode filtering via path segments in alphabetical order (e.g., `/search/episode-1/query-foo/season-2/sublanguageid-eng`).
 - **Podnapisi** — scrapes podnapisi.net JSON API, no API key
 
-Default order: `opensubtitles-org,podnapisi`. No API keys needed for any source.
+Default source: `opensubtitles-org`. Podnapisi available via `--sources opensubtitles-org,podnapisi`. No API keys needed.
 
 Search flow: `search_all_sources()` → iterates `SOURCES` (comma-separated) → calls `search_<source>()` for each.
 
@@ -41,11 +41,13 @@ Google provider does its own chunking internally. LLM providers use `chunk_srt()
 
 ### `auto` command
 
-All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Works on single file (`-f`) or directory (`--dir`). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename.
+All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file or directory as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename.
 
-## CLI Flags
+## CLI
 
-- `--auto` — auto-select first result (skip interactive prompt)
+- Positional argument after command = file or directory (auto-detected). E.g., `subtool info movie.srt`, `subtool auto ~/Movies/`
+- `-l` / `--lang` — target language(s), comma-separated for multi-lang (e.g., `-l en,fr`). Or set `DEFAULT_LANG` in config
+- `--auto` — auto-select most downloaded result (skip interactive prompt)
 - `--embed` / `--no-embed` — force/disable subtitle embedding (auto: on by default)
 - `--url <url>` — provide a subtitle URL directly
 - `--dry-run` — show results without downloading
@@ -59,6 +61,7 @@ All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Works on s
 - `detect_lang()` — auto-detect language from subtitle text sample
 - `validate_srt()` — check SRT format validity (indices, timestamps, text)
 - `_translate_prompt()` / `_translate_dispatch()` — shared translation logic (deduplicated)
+- `_multi_lang_dispatch()` — handles comma-separated `-l en,fr` by looping over each language
 
 ## CI/CD
 
@@ -74,6 +77,7 @@ All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Works on s
 - Helper functions: `log()`, `warn()`, `err()`, `info()`, `debug()`, `header()`, `die()`
 - `debug()` must always end with `|| true` (script uses `set -euo pipefail`)
 - URL encoding: `urlencode()` via jq
+- Default source: `opensubtitles-org` (podnapisi available via `--sources`)
 - Dependencies: `jq`, `curl`, `translate-shell` (required), `ffmpeg`/`ffprobe` (optional), `ffsubsync` via `uvx` (optional)
 
 ## GitHub

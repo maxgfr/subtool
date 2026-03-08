@@ -17,12 +17,13 @@ AI_PROVIDER="google"
 SEARCH_QUERY=""
 IMDB_ID=""
 FILE_PATH=""
+SCAN_DIR=""
 SEASON=""
 EPISODE=""
 OUTPUT_DIR="."
 FORCE_TRANSLATE=false
 KEEP_FILES=false
-SOURCES="opensubtitles-org,podnapisi"
+SOURCES="opensubtitles-org"
 FALLBACK_LANGS="en,de,es,pt"
 MAX_EPISODE=20
 AI_MODEL=""
@@ -51,6 +52,24 @@ debug()  { $VERBOSE && printf "${BLUE}[D]${NC} %s\n" "$*" >&2 || true; }
 header() { { $QUIET && return; printf "\n${BOLD}${BLUE}── %s ──${NC}\n" "$*"; } || true; }
 
 die() { err "$1"; exit 1; }
+
+# Multi-language dispatch: if LANG_TARGET has commas, loop over each language
+# Usage: _multi_lang_dispatch <function_name> && return
+_multi_lang_dispatch() {
+    local func="$1"
+    [[ "$LANG_TARGET" != *,* ]] && return 1
+    local saved_lang="$LANG_TARGET"
+    IFS=',' read -ra _ml_langs <<< "$saved_lang"
+    for _ml_lang in "${_ml_langs[@]}"; do
+        _ml_lang=$(echo "$_ml_lang" | tr -d ' ')
+        [[ -z "$_ml_lang" ]] && continue
+        printf "\n${BOLD}${BLUE}── Language: %s ──${NC}\n" "$_ml_lang" >&2
+        LANG_TARGET="$_ml_lang"
+        "$func" || warn "Failed for language: $_ml_lang"
+    done
+    LANG_TARGET="$saved_lang"
+    return 0
+}
 
 # URL encode (pure bash via jq)
 urlencode() { jq -sRr @uri <<< "$1" | sed 's/%0A$//'; }
@@ -189,6 +208,9 @@ MISTRAL_API_KEY=""
 GEMINI_API_KEY=""
 ZAI_API_KEY=""
 
+# Default language (e.g., fr, en, de — so you don't need -l every time)
+DEFAULT_LANG=""
+
 # Default AI provider: claude-code, zai-codeplan, openai, claude, mistral, gemini
 DEFAULT_AI_PROVIDER="google"  # or: claude-code, openai, claude, mistral, gemini
 
@@ -228,6 +250,8 @@ load_config() {
     [[ -z "$MODEL_MISTRAL" ]] && MODEL_MISTRAL="mistral-small-latest"
     [[ -z "$MODEL_GEMINI" ]] && MODEL_GEMINI="gemini-2.5-flash"
     AI_PROVIDER="${DEFAULT_AI_PROVIDER:-google}"
+    # Apply default language from config (CLI -l flag overrides later in parse_args)
+    [[ -z "$LANG_TARGET" && -n "${DEFAULT_LANG:-}" ]] && LANG_TARGET="$DEFAULT_LANG" || true
 }
 
 # ── OpenSubtitles.org (free, no API key) ──────────────────────────────────────
@@ -471,6 +495,16 @@ select_subtitle() {
         return 1
     fi
 
+    # Sort entries by downloads (descending) so --auto picks the most downloaded
+    local sorted_entries=()
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        sorted_entries+=("$line")
+    done <<< "$(printf '%s\n' "${entries[@]}" | jq -s -c 'sort_by(-.downloads)[]' 2>/dev/null)"
+    if [[ ${#sorted_entries[@]} -gt 0 ]]; then
+        entries=("${sorted_entries[@]}")
+    fi
+
     # JSON output mode
     if $JSON_OUTPUT; then
         printf '['
@@ -491,7 +525,7 @@ select_subtitle() {
 
     # Dry-run: just display results (to stderr so $() capture doesn't swallow them)
     if $DRY_RUN; then
-        header "Subtitles found"
+        header "Subtitles found" >&2
         for ((j=0; j<${#entries[@]}; j++)); do
             local name src_name downloads
             name=$(echo "${entries[$j]}" | jq -r '.name // "N/A"' 2>/dev/null)
@@ -503,7 +537,7 @@ select_subtitle() {
     fi
 
     # Interactive selection (display to stderr so $() capture doesn't swallow them)
-    header "Subtitles found"
+    header "Subtitles found" >&2
     for ((j=0; j<${#entries[@]}; j++)); do
         local name src_name downloads
         name=$(echo "${entries[$j]}" | jq -r '.name // "N/A"' 2>/dev/null)
@@ -961,7 +995,7 @@ ${BOLD}USAGE${NC}
     $SCRIPT_NAME [OPTIONS] <command>
 
 ${BOLD}COMMANDS${NC}
-    auto        All-in-one: download + translate + embed (--dir or --file)
+    auto        All-in-one: download + translate + embed (file or directory)
     get         Smart search (auto-parse title/season/episode)
     search      Manual search (with -q/-s/-e)
     batch       Download a full season (with -s)
@@ -982,15 +1016,14 @@ ${BOLD}COMMANDS${NC}
 
 ${BOLD}OPTIONS${NC}
     -q, --query <title>       Title of movie/series to search
-    -l, --lang <code>         Target language (fr, en, es, de, it, pt, etc.)
+    -l, --lang <code>         Target language(s): fr, en, or comma-separated: en,fr. Or set DEFAULT_LANG in config
     -i, --imdb <id>           IMDb ID (tt1234567)
     -s, --season <num>        Season number (series)
     -e, --episode <num>       Episode number (series)
-    -f, --file <file>         SRT file to translate
     -o, --output <dir>        Output directory (default: .)
     -p, --provider <provider> Translation provider (google|claude-code|openai|claude|mistral|gemini)
     -m, --model <model>       AI model to use (overrides provider default model)
-    --sources <src1,src2>     Sources (opensubtitles-org,podnapisi)
+    --sources <src1,src2>     Sources (default: opensubtitles-org. Available: podnapisi)
     --from <lang>             Source language for translation
     --fallback-langs <l1,l2>  Fallback languages (default: en,de,es,pt)
     --max-ep <num>            Max episodes per season (default: 20)
@@ -1005,7 +1038,7 @@ ${BOLD}OPTIONS${NC}
     --no-embed                Disable automatic embedding
     --force-translate         Force translation even if subtitles found
     --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
-    --auto                    Automatically select first result
+    --auto                    Automatically select most downloaded result
     --dry-run                 Display results without downloading
     --json                    JSON output (for integration with other tools)
     --verbose                 Display debug info
@@ -1015,9 +1048,9 @@ ${BOLD}OPTIONS${NC}
 
 ${BOLD}EXAMPLES${NC}
     # Auto: download + translate + embed in one command
-    $SCRIPT_NAME auto --dir ~/Movies/Die.Discounter -l fr
-    $SCRIPT_NAME auto --dir ~/Movies/Die.Discounter -l fr --embed
-    $SCRIPT_NAME auto -f movie.mkv -l fr
+    $SCRIPT_NAME auto ~/Movies/Die.Discounter -l fr
+    $SCRIPT_NAME auto ~/Movies/Die.Discounter -l fr --embed
+    $SCRIPT_NAME auto movie.mkv -l fr
 
     # Smart get - single episode
     $SCRIPT_NAME get -q \"Die Discounter S01E03\" -l de
@@ -1042,21 +1075,21 @@ ${BOLD}EXAMPLES${NC}
     $SCRIPT_NAME get -q \"Die Discounter S01E03\" -l fr --force-translate
 
     # Local translation
-    $SCRIPT_NAME translate -f episode.de.srt -l fr --from de -p zai-codeplan
+    $SCRIPT_NAME translate episode.de.srt -l fr --from de -p zai-codeplan
 
     # Subtitle tools
-    $SCRIPT_NAME info -f movie.srt
-    $SCRIPT_NAME clean -f movie.srt
-    $SCRIPT_NAME sync -f movie.srt --shift -1500
-    $SCRIPT_NAME convert -f movie.srt --to vtt
-    $SCRIPT_NAME merge -f movie.de.srt --merge-with movie.fr.srt
-    $SCRIPT_NAME fix -f broken.srt
-    $SCRIPT_NAME extract -f movie.mkv
-    $SCRIPT_NAME embed -f movie.mkv --sub movie.fr.srt -l fr
+    $SCRIPT_NAME info movie.srt
+    $SCRIPT_NAME clean movie.srt
+    $SCRIPT_NAME sync movie.srt --shift -1500
+    $SCRIPT_NAME convert movie.srt --to vtt
+    $SCRIPT_NAME merge movie.de.srt --merge-with movie.fr.srt
+    $SCRIPT_NAME fix broken.srt
+    $SCRIPT_NAME extract movie.mkv
+    $SCRIPT_NAME embed movie.mkv --sub movie.fr.srt -l fr
 
     # Auto sync with video (ffsubsync)
-    $SCRIPT_NAME autosync -f desync.srt --ref movie.mkv
-    $SCRIPT_NAME autosync -f desync.srt --ref reference.srt
+    $SCRIPT_NAME autosync desync.srt --ref movie.mkv
+    $SCRIPT_NAME autosync desync.srt --ref reference.srt
 "
 }
 
@@ -1315,9 +1348,10 @@ show_parsed() {
 
 # ── Command: get (smart) ─────────────────────────────────────────────────────
 cmd_get() {
+    _multi_lang_dispatch cmd_get && return
     # Direct URL download mode
     if [[ -n "${SUBTITLE_URL:-}" ]]; then
-        [[ -z "$LANG_TARGET" ]] && die "Specify --lang or -l <code>"
+        [[ -z "$LANG_TARGET" ]] && die "Specify -l <lang> or set DEFAULT_LANG in config"
         local safe_name="subtitle_url_$$"
         local output="${OUTPUT_DIR}/${safe_name}.${LANG_TARGET}.srt"
         header "subtool get (URL)"
@@ -1331,7 +1365,7 @@ cmd_get() {
     fi
 
     [[ -z "$SEARCH_QUERY" && -z "$IMDB_ID" ]] && die "Specify --query or -q <title>"
-    [[ -z "$LANG_TARGET" ]] && die "Specify --lang or -l <code>"
+    [[ -z "$LANG_TARGET" ]] && die "Specify -l <lang> or set DEFAULT_LANG in config"
 
     # If user already provided -s/-e, use them
     local raw_query="${SEARCH_QUERY:-}"
@@ -1457,8 +1491,9 @@ cmd_get() {
 
 # ── Command: search ──────────────────────────────────────────────────────────
 cmd_search() {
+    _multi_lang_dispatch cmd_search && return
     [[ -z "$SEARCH_QUERY" && -z "$IMDB_ID" ]] && die "Specify --query or --imdb"
-    [[ -z "$LANG_TARGET" ]] && die "Specify --lang (e.g., fr, en, es)"
+    [[ -z "$LANG_TARGET" ]] && die "Specify -l <lang> or set DEFAULT_LANG in config"
 
     local query="${SEARCH_QUERY:-}"
 
@@ -1546,8 +1581,9 @@ cmd_search() {
 
 # ── Command: batch (full season) ─────────────────────────────────────────────
 cmd_batch() {
+    _multi_lang_dispatch cmd_batch && return
     [[ -z "$SEARCH_QUERY" && -z "$IMDB_ID" ]] && die "Specify --query or --imdb"
-    [[ -z "$LANG_TARGET" ]] && die "Specify --lang"
+    [[ -z "$LANG_TARGET" ]] && die "Specify -l <lang> or set DEFAULT_LANG in config"
     [[ -z "$SEASON" ]] && die "Specify --season"
 
     local query="${SEARCH_QUERY:-}"
@@ -1647,9 +1683,15 @@ cmd_batch() {
 
 # ── Command: scan (auto-download from video folder) ──────────────────────────
 cmd_scan() {
-    [[ -z "$SCAN_DIR" ]] && die "Specify --dir <video_folder>"
+    _multi_lang_dispatch cmd_scan && return
+    # Auto-detect: if FILE_PATH was set (positional arg), treat it as directory for scan
+    if [[ -z "$SCAN_DIR" && -n "$FILE_PATH" ]]; then
+        SCAN_DIR="$FILE_PATH"
+        FILE_PATH=""
+    fi
+    [[ -z "$SCAN_DIR" ]] && die "Specify a directory to scan"
     [[ ! -d "$SCAN_DIR" ]] && die "Directory not found: $SCAN_DIR"
-    [[ -z "$LANG_TARGET" ]] && die "Specify --lang (e.g., fr, en, de)"
+    [[ -z "$LANG_TARGET" ]] && die "Specify -l <lang> or set DEFAULT_LANG in config"
 
     local title_override="${SEARCH_QUERY:-}"
     local imdb_override="${IMDB_ID:-}"
@@ -1776,19 +1818,26 @@ cmd_scan() {
 
 # ── Command: auto (all-in-one: download + translate + embed) ──────────────────
 cmd_auto() {
+    _multi_lang_dispatch cmd_auto && return
     local target="$LANG_TARGET"
-    [[ -z "$target" ]] && die "Specify --lang <target_language> (e.g., fr)"
+    [[ -z "$target" ]] && die "Specify -l <lang> or set DEFAULT_LANG in config"
 
-    # Single file or directory mode
+    # Single file or directory mode (auto-detect)
     local mode=""
-    if [[ -n "$FILE_PATH" ]]; then
-        [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
-        mode="file"
-    elif [[ -n "$SCAN_DIR" ]]; then
+    if [[ -n "$SCAN_DIR" ]]; then
         [[ ! -d "$SCAN_DIR" ]] && die "Directory not found: $SCAN_DIR"
         mode="dir"
+    elif [[ -n "$FILE_PATH" ]]; then
+        if [[ -d "$FILE_PATH" ]]; then
+            SCAN_DIR="$FILE_PATH"
+            FILE_PATH=""
+            mode="dir"
+        else
+            [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
+            mode="file"
+        fi
     else
-        die "Specify --file <video> or --dir <directory>"
+        die "Specify a video file or directory"
     fi
 
     local title_override="${SEARCH_QUERY:-}"
@@ -2057,8 +2106,9 @@ _auto_embed() {
 
 # ── Command: translate ───────────────────────────────────────────────────────
 cmd_translate() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <file.srt>"
-    [[ -z "$LANG_TARGET" ]] && die "Specify --lang <target_language_code>"
+    _multi_lang_dispatch cmd_translate && return
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
+    [[ -z "$LANG_TARGET" ]] && die "Specify -l <lang> or set DEFAULT_LANG in config"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
     local src_lang="${SRC_LANG:-}"
@@ -2067,7 +2117,7 @@ cmd_translate() {
 
 # ── Command: info (SRT file stats) ───────────────────────────────────────────
 cmd_info() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <file.srt>"
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
     header "Info: $(basename "$FILE_PATH")"
@@ -2135,7 +2185,7 @@ cmd_info() {
 
 # ── Command: clean (SRT cleanup) ─────────────────────────────────────────────
 cmd_clean() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <file.srt>"
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
     local base_name ext output
@@ -2193,7 +2243,7 @@ cmd_clean() {
 SYNC_SHIFT=""
 
 cmd_sync() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <file.srt>"
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
     [[ -z "$SYNC_SHIFT" ]] && die "Specify --shift <ms> (e.g., +1500, -800)"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
@@ -2238,7 +2288,7 @@ cmd_sync() {
 CONVERT_FORMAT=""
 
 cmd_convert() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <file>"
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
     [[ -z "$CONVERT_FORMAT" ]] && die "Specify --to <format> (srt, vtt, ass)"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
@@ -2359,7 +2409,7 @@ cmd_convert() {
 MERGE_FILE=""
 
 cmd_merge() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <primary_file.srt>"
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
     [[ -z "$MERGE_FILE" ]] && die "Specify --merge-with <secondary_file.srt>"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
     [[ ! -f "$MERGE_FILE" ]] && die "File not found: $MERGE_FILE"
@@ -2424,7 +2474,7 @@ cmd_merge() {
 
 # ── Command: fix (SRT repair) ────────────────────────────────────────────────
 cmd_fix() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <file.srt>"
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
     local base_name ext output
@@ -2535,7 +2585,7 @@ cmd_fix() {
 EXTRACT_TRACK=""
 
 cmd_extract() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <video.mkv>"
+    [[ -z "$FILE_PATH" ]] && die "Specify a video file (e.g., subtool $COMMAND video.mkv)"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
 
     if ! command -v ffmpeg &>/dev/null; then
@@ -2605,7 +2655,7 @@ cmd_extract() {
 
 # ── Command: embed (embed subtitles in video) ────────────────────────────────
 cmd_embed() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <video.mkv>"
+    [[ -z "$FILE_PATH" ]] && die "Specify a video file (e.g., subtool $COMMAND video.mkv)"
     [[ -z "$EMBED_SUB" ]] && die "Specify --sub <file.srt>"
     [[ ! -f "$FILE_PATH" ]] && die "Video not found: $FILE_PATH"
     [[ ! -f "$EMBED_SUB" ]] && die "Subtitle not found: $EMBED_SUB"
@@ -2648,7 +2698,7 @@ cmd_embed() {
 AUTOSYNC_REF=""
 
 cmd_autosync() {
-    [[ -z "$FILE_PATH" ]] && die "Specify --file <subtitle.srt>"
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
     [[ -z "$AUTOSYNC_REF" ]] && die "Specify --ref <video.mkv or reference.srt>"
     [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
     [[ ! -f "$AUTOSYNC_REF" ]] && die "Reference not found: $AUTOSYNC_REF"
@@ -2700,7 +2750,6 @@ cmd_autosync() {
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 SRC_LANG=""
-SCAN_DIR=""
 COMMAND=""
 EMBED_SUB=""
 CONFIG_SUBCMD=""
@@ -2727,7 +2776,6 @@ parse_args() {
             -i|--imdb)     IMDB_ID="$2"; shift 2 ;;
             -s|--season)   SEASON="$2"; shift 2 ;;
             -e|--episode)  EPISODE="$2"; shift 2 ;;
-            -f|--file)     FILE_PATH="$2"; shift 2 ;;
             -o|--output)   OUTPUT_DIR="$2"; shift 2 ;;
             -p|--provider) AI_PROVIDER="$2"; shift 2 ;;
             -m|--model)    AI_MODEL="$2"; shift 2 ;;
@@ -2751,10 +2799,21 @@ parse_args() {
             --json)        JSON_OUTPUT=true; QUIET=true; shift ;;
             --verbose)     VERBOSE=true; shift ;;
             --quiet)       QUIET=true; shift ;;
-            --dir)         SCAN_DIR="$2"; shift 2 ;;
             -h|--help)     usage; exit 0 ;;
             -v|--version)  echo "$VERSION"; exit 0 ;;
-            *)             die "Unknown option: $1. Use --help" ;;
+            *)
+                # Positional argument: auto-detect file or directory
+                if [[ -n "$COMMAND" && -z "$FILE_PATH" && -z "$SCAN_DIR" ]]; then
+                    if [[ -d "$1" ]]; then
+                        SCAN_DIR="$1"
+                    else
+                        FILE_PATH="$1"
+                    fi
+                    shift
+                else
+                    die "Unknown option: $1. Use --help"
+                fi
+                ;;
         esac
     done
 }

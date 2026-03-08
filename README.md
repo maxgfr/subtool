@@ -4,7 +4,8 @@ All-in-one CLI for subtitle management: download, translate, convert, sync, clea
 
 ## Features
 
-- **Multi-source download** from OpenSubtitles.org and Podnapisi — no API keys needed
+- **Multi-source download** from OpenSubtitles.org (default) and Podnapisi — no API keys needed
+- **Multi-language** — download subtitles in multiple languages at once (`-l en,fr`)
 - **Fast translation** with Google Translate (default, via [translate-shell](https://github.com/soimort/translate-shell)) — no API key needed
 - **AI translation** with Claude Code, OpenAI, Gemini, Mistral, etc.
 - **Auto mode** — one command: download + translate + sync + embed (`subtool auto`)
@@ -61,71 +62,73 @@ sudo mv subtool /usr/local/bin/
 
 ```bash
 # Default: Google Translate (fast)
-subtool translate -f subs.srt -l fr --from de
+subtool translate subs.srt -l fr --from de
 
 # Use an AI provider for higher quality
-subtool translate -f subs.srt -l fr -p claude-code -m sonnet
-subtool translate -f subs.srt -l fr -p openai
+subtool translate subs.srt -l fr -p claude-code -m sonnet
+subtool translate subs.srt -l fr -p openai
 ```
 
 ## Usage
 
 ```bash
 # Auto mode: download + translate + sync + embed — one command
-subtool auto --dir ~/Movies/Die.Discounter -l fr               # all-in-one (Google Translate)
-subtool auto --dir ~/Movies/Die.Discounter -l fr -p claude-code # use Claude for translation
-subtool auto --dir ~/Movies/Die.Discounter -l fr -p openai      # use OpenAI for translation
-subtool auto -f movie.mkv -l fr                                 # single file
-subtool auto --dir ~/Movies/Die.Discounter -l fr --no-embed     # skip embed
+subtool auto ~/Movies/Die.Discounter -l fr               # all-in-one (Google Translate)
+subtool auto ~/Movies/Die.Discounter -l fr -p claude-code # use Claude for translation
+subtool auto ~/Movies/Die.Discounter -l fr -p openai      # use OpenAI for translation
+subtool auto movie.mkv -l fr                              # single file
+subtool auto ~/Movies/Die.Discounter -l en,fr             # multi-language
+subtool auto ~/Movies/Die.Discounter -l fr --no-embed     # skip embed
 
 # Download subtitles
 subtool get -q "Inception 2010" -l fr
 subtool get -q "Breaking Bad S05E14" -l en
+subtool get -q "Breaking Bad S05E14" -l en,fr --auto      # both languages
 
 # Batch download a full season
 subtool batch -q "Dark S01" -l en
 
 # Scan a folder and auto-download subtitles for all videos
-subtool scan --dir ~/Movies/Die.Discounter -l fr
-subtool scan --dir ~/Movies/Die.Discounter -l fr --dry-run          # preview only
-subtool scan --dir ~/Movies/Die.Discounter -l fr -q "Die Discounter" # override title
+subtool scan ~/Movies/Die.Discounter -l fr
+subtool scan ~/Movies/Die.Discounter -l fr --dry-run          # preview only
+subtool scan ~/Movies/Die.Discounter -l fr -q "Die Discounter" # override title
 
 # Search without downloading
 subtool search -q "Parasite" -l en
 
 # Translate subtitles (default: Google Translate — fast, free)
-subtool translate -f subs.srt -l fr --from de
-subtool translate -f subs.srt -l fr --from de -p claude-code    # use AI instead
+subtool translate subs.srt -l fr --from de
+subtool translate subs.srt -l fr --from de -p claude-code    # use AI instead
 
 # Subtitle info
-subtool info -f subs.srt
+subtool info subs.srt
 
 # Clean (remove HTML tags, HI/SDH, ads)
-subtool clean -f subs.srt
+subtool clean subs.srt
 
 # Time sync (shift timestamps)
-subtool sync -f subs.srt --shift +2000
-subtool sync -f subs.srt --shift -500
+subtool sync subs.srt --shift +2000
+subtool sync subs.srt --shift -500
 
 # Auto-sync with video
-subtool autosync -f subs.srt --ref video.mkv
+subtool autosync subs.srt --ref video.mkv
 
 # Convert between formats
-subtool convert -f subs.srt --to vtt
-subtool convert -f subs.srt --to ass
-subtool convert -f subs.ass --to srt
+subtool convert subs.srt --to vtt
+subtool convert subs.srt --to ass
+subtool convert subs.ass --to srt
 
 # Merge bilingual subtitles
-subtool merge -f primary.srt --merge-with secondary.srt
+subtool merge primary.srt --merge-with secondary.srt
 
 # Fix broken subtitles (renumber, fix overlaps, sort by timestamp, UTF-8)
-subtool fix -f broken.srt
+subtool fix broken.srt
 
 # Extract subtitles from video
-subtool extract -f video.mkv --track 0
+subtool extract video.mkv --track 0
 
 # Embed subtitles into video
-subtool embed -f video.mkv --sub subs.srt -l fr
+subtool embed video.mkv --sub subs.srt -l fr
 
 # Check environment (deps, API keys, config)
 subtool check
@@ -135,9 +138,8 @@ subtool check
 
 | Flag | Description |
 |---|---|
-| `--auto` | Auto-select first result (no interactive prompt) |
+| `--auto` | Auto-select most downloaded result (no interactive prompt) |
 | `--dry-run` | Show results without downloading |
-| `--dir <path>` | Directory to scan for video files (used with `scan`, `auto`) |
 | `--embed` | Force embed subtitles into video (default in `auto` if ffmpeg available) |
 | `--no-embed` | Disable auto-embed in `auto` mode |
 | `--url <url>` | Provide a subtitle URL directly for download |
@@ -172,9 +174,13 @@ subtool check                     # Diagnostic: deps, config
 
 subtool works out of the box — no API keys needed for downloading or translating subtitles. The default translation provider is Google Translate via `translate-shell`.
 
-Optional API keys for other AI translation providers are stored in `~/.config/subtool/config`:
+Configuration is stored in `~/.config/subtool/config`:
 
 ```
+# Default language (so you don't need -l every time)
+DEFAULT_LANG="fr"
+
+# Optional API keys for AI translation providers
 OPENAI_API_KEY="..."
 ANTHROPIC_API_KEY="..."
 MISTRAL_API_KEY="..."
@@ -224,13 +230,12 @@ The `scan` command recursively finds video files in a directory and auto-downloa
 
 | Flag | Description |
 |---|---|
-| `--dir <path>` | Directory to scan (required) |
-| `-l / --lang <code>` | Target language (required) |
+| `-l / --lang <code>` | Target language (or set `DEFAULT_LANG` in config) |
 | `-q / --query <title>` | Override the parsed title for all files |
 | `-i / --imdb <id>` | Use an IMDb ID for more accurate results |
 | `--force-translate` | If not found in target language, try fallback languages + AI translation |
 | `--dry-run` | Preview what would be downloaded without actually downloading |
-| `--sources` | Choose subtitle sources (default: `opensubtitles-org,podnapisi`) |
+| `--sources` | Choose subtitle sources (default: `opensubtitles-org`) |
 | `--fallback-langs` | Languages to try for fallback translation (default: `en,de,es,pt`) |
 
 **Tips:**
