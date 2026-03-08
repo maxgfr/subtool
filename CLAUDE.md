@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Single bash script (`subtool.sh`, ~2350 lines) for subtitle management: download, translate, convert, sync, clean, merge, fix, extract, embed.
+Single bash script (`subtool.sh`, ~2670 lines) for subtitle management: download, translate, convert, sync, clean, merge, fix, extract, embed.
 
 ## Architecture
 
@@ -22,13 +22,14 @@ Default order: `opensubtitles-org,podnapisi`. No API keys needed for any source.
 
 Search flow: `search_all_sources()` → iterates `SOURCES` (comma-separated) → calls `search_<source>()` for each.
 
-### AI Translation Providers
+### Translation Providers
 
-- `claude-code` (default) — calls `claude -p` CLI, no API key needed
+- `google` (default) — uses `translate-shell` (`trans`), Google Translate, no API key. Parallel chunks (80 lines, 8 workers). ~16s/episode.
+- `claude-code` — calls `claude -p` CLI (haiku, effort low), no API key needed
 - `zai-codeplan` — Z.ai Coding Plan API
 - `openai`, `claude`, `mistral`, `gemini` — standard chat APIs
 
-Translation uses chunking for large files (`chunk_srt()`, 250 lines per chunk).
+Google provider does its own chunking internally. LLM providers use `chunk_srt()` (250 lines/chunk).
 
 ### Smart Query Parsing
 
@@ -36,11 +37,17 @@ Translation uses chunking for large files (`chunk_srt()`, 250 lines per chunk).
 
 ## Commands
 
-`get`, `search`, `batch`, `scan`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `fix`, `extract`, `embed`, `config`, `check`, `providers`, `sources`
+`get`, `search`, `batch`, `scan`, `auto`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `fix`, `extract`, `embed`, `config`, `check`, `providers`, `sources`
+
+### `auto` command
+
+All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Works on single file (`-f`) or directory (`--dir`). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename.
 
 ## CLI Flags
 
 - `--auto` — auto-select first result (skip interactive prompt)
+- `--embed` / `--no-embed` — force/disable subtitle embedding (auto: on by default)
+- `--url <url>` — provide a subtitle URL directly
 - `--dry-run` — show results without downloading
 - `--json` — JSON output (implies `--quiet`)
 - `--verbose` — debug output via `debug()` to stderr
@@ -67,7 +74,7 @@ Translation uses chunking for large files (`chunk_srt()`, 250 lines per chunk).
 - Helper functions: `log()`, `warn()`, `err()`, `info()`, `debug()`, `header()`, `die()`
 - `debug()` must always end with `|| true` (script uses `set -euo pipefail`)
 - URL encoding: `urlencode()` via jq
-- Dependencies: `jq`, `curl` (required), `ffmpeg`/`ffprobe` (optional), `ffsubsync` via `uvx` (optional)
+- Dependencies: `jq`, `curl`, `translate-shell` (required), `ffmpeg`/`ffprobe` (optional), `ffsubsync` via `uvx` (optional)
 
 ## GitHub
 

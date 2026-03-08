@@ -7,7 +7,7 @@ All-in-one CLI for subtitle management: download, translate, convert, sync, clea
 - **Multi-source download** from OpenSubtitles.org and Podnapisi — no API keys needed
 - **Fast translation** with Google Translate (default, via [translate-shell](https://github.com/soimort/translate-shell)) — no API key needed
 - **AI translation** with Claude Code, OpenAI, Gemini, Mistral, etc.
-- **Auto mode** — one command: download + translate + embed (`subtool auto`)
+- **Auto mode** — one command: download + translate + sync + embed (`subtool auto`)
 - **Smart parsing** — auto-detects movies, episodes, seasons, ranges, IMDb IDs
 - **Format conversion** between SRT, VTT, and ASS
 - **Subtitle tools**: info, clean, sync, fix, merge, extract, embed
@@ -79,7 +79,9 @@ subtool get -q "Breaking Bad S05E14" -l en
 subtool batch -q "Dark S01" -l en
 
 # Auto mode: download + translate + sync + embed — one command
-subtool auto --dir ~/Movies/Die.Discounter -l fr               # all-in-one
+subtool auto --dir ~/Movies/Die.Discounter -l fr               # all-in-one (Google Translate)
+subtool auto --dir ~/Movies/Die.Discounter -l fr -p claude-code # use Claude for translation
+subtool auto --dir ~/Movies/Die.Discounter -l fr -p openai      # use OpenAI for translation
 subtool auto -f movie.mkv -l fr                                 # single file
 subtool auto --dir ~/Movies/Die.Discounter -l fr --no-embed     # skip embed
 
