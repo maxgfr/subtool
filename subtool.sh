@@ -2224,6 +2224,29 @@ _lang_title() {
         id|ind) echo "Indonesian" ;;
         ms|msa|may) echo "Malay" ;;
         hi|hin) echo "Hindi" ;;
+        bn|ben) echo "Bengali" ;;
+        ta|tam) echo "Tamil" ;;
+        te|tel) echo "Telugu" ;;
+        mr|mar) echo "Marathi" ;;
+        gu|guj) echo "Gujarati" ;;
+        kn|kan) echo "Kannada" ;;
+        ml|mal) echo "Malayalam" ;;
+        pa|pan) echo "Punjabi" ;;
+        ur|urd) echo "Urdu" ;;
+        ne|nep) echo "Nepali" ;;
+        si|sin) echo "Sinhala" ;;
+        my|mya|bur) echo "Burmese" ;;
+        km|khm) echo "Khmer" ;;
+        lo|lao) echo "Lao" ;;
+        mn|mon) echo "Mongolian" ;;
+        ka|kat|geo) echo "Georgian" ;;
+        hy|hye|arm) echo "Armenian" ;;
+        az|aze) echo "Azerbaijani" ;;
+        uz|uzb) echo "Uzbek" ;;
+        kk|kaz) echo "Kazakh" ;;
+        tl|tgl|fil) echo "Filipino" ;;
+        jv|jav) echo "Javanese" ;;
+        su|sun) echo "Sundanese" ;;
         uk|ukr) echo "Ukrainian" ;;
         bg|bul) echo "Bulgarian" ;;
         hr|hrv) echo "Croatian" ;;
@@ -2236,6 +2259,50 @@ _lang_title() {
         ca|cat) echo "Catalan" ;;
         gl|glg) echo "Galician" ;;
         eu|eus|baq) echo "Basque" ;;
+        # African
+        af|afr) echo "Afrikaans" ;;
+        sw|swa) echo "Swahili" ;;
+        am|amh) echo "Amharic" ;;
+        yo|yor) echo "Yoruba" ;;
+        zu|zul) echo "Zulu" ;;
+        xh|xho) echo "Xhosa" ;;
+        ha|hau) echo "Hausa" ;;
+        ig|ibo) echo "Igbo" ;;
+        so|som) echo "Somali" ;;
+        rw|kin) echo "Kinyarwanda" ;;
+        mg|mlg) echo "Malagasy" ;;
+        # European (missing)
+        is|isl|ice) echo "Icelandic" ;;
+        ga|gle) echo "Irish" ;;
+        cy|cym|wel) echo "Welsh" ;;
+        sq|sqi|alb) echo "Albanian" ;;
+        mk|mkd|mac) echo "Macedonian" ;;
+        bs|bos) echo "Bosnian" ;;
+        be|bel) echo "Belarusian" ;;
+        mt|mlt) echo "Maltese" ;;
+        lb|ltz) echo "Luxembourgish" ;;
+        fo|fao) echo "Faroese" ;;
+        # Persian / Central Asian
+        fa|fas|per) echo "Persian" ;;
+        ku|kur) echo "Kurdish" ;;
+        ps|pus) echo "Pashto" ;;
+        tg|tgk) echo "Tajik" ;;
+        tk|tuk) echo "Turkmen" ;;
+        ky|kir) echo "Kyrgyz" ;;
+        tt|tat) echo "Tatar" ;;
+        # South Asian (missing)
+        or|ori) echo "Odia" ;;
+        as|asm) echo "Assamese" ;;
+        sd|snd) echo "Sindhi" ;;
+        # East/Southeast Asian (missing)
+        bo|bod|tib) echo "Tibetan" ;;
+        ug|uig) echo "Uyghur" ;;
+        # Caribbean / Creole
+        ht|hat) echo "Haitian Creole" ;;
+        # Other
+        eo|epo) echo "Esperanto" ;;
+        la|lat) echo "Latin" ;;
+        yi|yid) echo "Yiddish" ;;
         *) echo "$code" ;;
     esac
 }
