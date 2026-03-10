@@ -2192,6 +2192,54 @@ _auto_sync() {
     [[ -n "$ref_tmp" ]] && rm -f "$ref_tmp" || true
 }
 
+# Helper: convert language code to human-readable title for subtitle track metadata
+_lang_title() {
+    local code="$1"
+    case "$code" in
+        en|eng) echo "English" ;;
+        fr|fre|fra) echo "French" ;;
+        de|deu|ger) echo "German" ;;
+        es|spa) echo "Spanish" ;;
+        it|ita) echo "Italian" ;;
+        pt|por) echo "Portuguese" ;;
+        nl|nld|dut) echo "Dutch" ;;
+        ru|rus) echo "Russian" ;;
+        ja|jpn) echo "Japanese" ;;
+        zh|zho|chi) echo "Chinese" ;;
+        ko|kor) echo "Korean" ;;
+        ar|ara) echo "Arabic" ;;
+        pl|pol) echo "Polish" ;;
+        tr|tur) echo "Turkish" ;;
+        sv|swe) echo "Swedish" ;;
+        da|dan) echo "Danish" ;;
+        no|nor|nb|nob) echo "Norwegian" ;;
+        fi|fin) echo "Finnish" ;;
+        cs|ces|cze) echo "Czech" ;;
+        ro|ron|rum) echo "Romanian" ;;
+        hu|hun) echo "Hungarian" ;;
+        el|ell|gre) echo "Greek" ;;
+        he|heb) echo "Hebrew" ;;
+        th|tha) echo "Thai" ;;
+        vi|vie) echo "Vietnamese" ;;
+        id|ind) echo "Indonesian" ;;
+        ms|msa|may) echo "Malay" ;;
+        hi|hin) echo "Hindi" ;;
+        uk|ukr) echo "Ukrainian" ;;
+        bg|bul) echo "Bulgarian" ;;
+        hr|hrv) echo "Croatian" ;;
+        sr|srp) echo "Serbian" ;;
+        sk|slk|slo) echo "Slovak" ;;
+        sl|slv) echo "Slovenian" ;;
+        et|est) echo "Estonian" ;;
+        lv|lav) echo "Latvian" ;;
+        lt|lit) echo "Lithuanian" ;;
+        ca|cat) echo "Catalan" ;;
+        gl|glg) echo "Galician" ;;
+        eu|eus|baq) echo "Basque" ;;
+        *) echo "$code" ;;
+    esac
+}
+
 # Helper for auto-embed (embed srt into video, replace original)
 _auto_embed() {
     local video="$1" sub="$2" lang="$3"
@@ -2215,9 +2263,12 @@ _auto_embed() {
     if [[ -n "$existing_subs" ]]; then
         sub_count=$(echo "$existing_subs" | wc -l | tr -d ' ')
     fi
+    local lang_title
+    lang_title=$(_lang_title "$lang")
     if ffmpeg -v quiet -i "$video" -i "$sub" \
         -map 0 -map 1:0 -c copy -c:s:"$sub_count" "$sub_codec" \
         -metadata:s:s:"$sub_count" language="$lang" \
+        -metadata:s:s:"$sub_count" title="$lang_title" \
         "$tmp_video" -y 2>/dev/null && [[ -s "$tmp_video" ]]; then
         mv "$tmp_video" "$video"
         log "Embed OK: $(basename "$video")"
@@ -2806,9 +2857,12 @@ cmd_embed() {
     info "Video: $(basename "$FILE_PATH")"
     info "Subtitle: $(basename "$EMBED_SUB") ($sub_lang)"
 
+    local sub_title
+    sub_title=$(_lang_title "$sub_lang")
     ffmpeg -v quiet -i "$FILE_PATH" -i "$EMBED_SUB" \
         -c copy -c:s "$sub_codec" \
         -metadata:s:s:0 language="$sub_lang" \
+        -metadata:s:s:0 title="$sub_title" \
         "$output" -y 2>/dev/null
 
     if [[ -s "$output" ]]; then
