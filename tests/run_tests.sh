@@ -340,22 +340,22 @@ test_parse() {
 
     local ok=true desc="parse: \"$query\""
 
-    if ! echo "$out" | grep -qi "Mode:.*$expected_mode"; then
+    if ! grep -qi "Mode:.*$expected_mode" <<< "$out"; then
         ok=false; desc+=" [mode=$expected_mode FAIL]"
     fi
-    if [[ -n "$expected_title" ]] && ! echo "$out" | grep -q "Title: $expected_title"; then
+    if [[ -n "$expected_title" ]] && ! grep -q "Title: $expected_title" <<< "$out"; then
         ok=false; desc+=" [title FAIL]"
     fi
-    if [[ -n "$expected_season" ]] && ! echo "$out" | grep -q "Season: $expected_season"; then
+    if [[ -n "$expected_season" ]] && ! grep -q "Season: $expected_season" <<< "$out"; then
         ok=false; desc+=" [season FAIL]"
     fi
-    if [[ -n "$expected_ep" && "$expected_mode" != "Range" ]] && ! echo "$out" | grep -q "Episode: $expected_ep"; then
+    if [[ -n "$expected_ep" && "$expected_mode" != "Range" ]] && ! grep -q "Episode: $expected_ep" <<< "$out"; then
         ok=false; desc+=" [episode FAIL]"
     fi
-    if [[ -n "$expected_ep_end" ]] && ! echo "$out" | grep -q "Episodes: ${expected_ep}-${expected_ep_end}"; then
+    if [[ -n "$expected_ep_end" ]] && ! grep -q "Episodes: ${expected_ep}-${expected_ep_end}" <<< "$out"; then
         ok=false; desc+=" [range FAIL]"
     fi
-    if [[ -n "$expected_imdb" ]] && ! echo "$out" | grep -q "IMDb: $expected_imdb"; then
+    if [[ -n "$expected_imdb" ]] && ! grep -q "IMDb: $expected_imdb" <<< "$out"; then
         ok=false; desc+=" [imdb FAIL]"
     fi
 
