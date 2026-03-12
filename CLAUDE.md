@@ -31,17 +31,26 @@ Search flow: `search_all_sources()` → iterates `SOURCES` (comma-separated) →
 
 Google provider does its own chunking internally. LLM providers use `chunk_srt()` (250 lines/chunk).
 
+### Transcription Providers
+
+- `whisper` (default) — local, uses `openai-whisper` CLI (or `uvx openai-whisper`), no API key. Model configurable via `WHISPER_MODEL` (default: `medium`).
+- `openai-api` — cloud, uses OpenAI Whisper API (`/v1/audio/transcriptions`), requires `OPENAI_API_KEY`. 25MB file limit.
+
 ### Smart Query Parsing
 
 `parse_smart_query()` extracts title, season, episode, range, year, IMDB ID from free-text input like "Die Discounter S01E03-E08".
 
 ## Commands
 
-`get`, `search`, `batch`, `scan`, `auto`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `fix`, `extract`, `embed`, `config`, `check`, `providers`, `sources`
+`get`, `search`, `batch`, `scan`, `auto`, `transcribe`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `fix`, `extract`, `embed`, `config`, `check`, `providers`, `sources`
 
 ### `auto` command
 
-All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file or directory as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename.
+All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file or directory as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable).
+
+### `transcribe` command
+
+Generate subtitles from video audio via speech-to-text. Providers: `whisper` (default, local) and `openai-api` (cloud). Language auto-detected from output. Use `--from` to hint source language, `--whisper-model` to select model size (tiny/base/small/medium/large), `--transcribe-provider` to switch provider.
 
 ## CLI
 
@@ -62,6 +71,8 @@ All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a fil
 - `validate_srt()` — check SRT format validity (indices, timestamps, text)
 - `_translate_prompt()` / `_translate_dispatch()` — shared translation logic (deduplicated)
 - `_multi_lang_dispatch()` — handles comma-separated `-l en,fr` by looping over each language
+- `transcribe_video()` — orchestrator: extract audio -> transcribe -> validate SRT
+- `_transcribe_dispatch()` — case dispatch for transcription providers (same pattern as `_translate_dispatch`)
 
 ## CI/CD
 
@@ -78,7 +89,8 @@ All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a fil
 - `debug()` must always end with `|| true` (script uses `set -euo pipefail`)
 - URL encoding: `urlencode()` via jq
 - Default source: `opensubtitles-org` (podnapisi available via `--sources`)
-- Dependencies: `jq`, `curl`, `translate-shell` (required), `ffmpeg`/`ffprobe` (optional), `ffsubsync` via `uvx` (optional)
+- Dependencies: `jq`, `curl`, `translate-shell` (required), `ffmpeg`/`ffprobe` (optional), `ffsubsync` via `uvx` (optional), `whisper` via `uvx` (optional, transcription)
+- Config keys: `DEFAULT_TRANSCRIBE_PROVIDER`, `WHISPER_MODEL`
 
 ## GitHub
 

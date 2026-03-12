@@ -36,6 +36,9 @@ JSON_OUTPUT=false
 VERBOSE=false
 QUIET=false
 SUBTITLE_URL=""
+TRANSCRIBE_PROVIDER="whisper"
+WHISPER_MODEL=""
+NO_TRANSCRIBE=false
 
 # ── Default models ────────────────────────────────────────────────────────────
 MODEL_ZAI_CODEPLAN="glm-4.7"
@@ -222,6 +225,12 @@ MODEL_OPENAI=""
 MODEL_CLAUDE=""
 MODEL_MISTRAL=""
 MODEL_GEMINI=""
+
+# Default transcription provider: whisper, openai-api
+DEFAULT_TRANSCRIBE_PROVIDER=""
+
+# Whisper model (tiny, base, small, medium, large) — leave empty for "medium"
+WHISPER_MODEL=""
 CONF
         info "Config created: $CONFIG_FILE"
     fi
@@ -251,6 +260,8 @@ load_config() {
     [[ -z "$MODEL_MISTRAL" ]] && MODEL_MISTRAL="mistral-small-latest"
     [[ -z "$MODEL_GEMINI" ]] && MODEL_GEMINI="gemini-2.5-flash"
     AI_PROVIDER="${DEFAULT_AI_PROVIDER:-google}"
+    TRANSCRIBE_PROVIDER="${DEFAULT_TRANSCRIBE_PROVIDER:-whisper}"
+    [[ -z "${WHISPER_MODEL:-}" ]] && WHISPER_MODEL="medium"
     # Apply default language from config (CLI -l flag overrides later in parse_args)
     [[ -z "$LANG_TARGET" && -n "${DEFAULT_LANG:-}" ]] && LANG_TARGET="$DEFAULT_LANG" || true
 }
@@ -886,6 +897,156 @@ _translate_dispatch() {
     esac
 }
 
+# ── Transcription ─────────────────────────────────────────────────────────────
+
+# Extract audio from video file for transcription
+# Usage: _extract_audio video output_format [lang]
+# output_format: "wav" for local whisper, "mp3" for API (smaller)
+_extract_audio() {
+    local video="$1" fmt="$2" lang="${3:-}"
+    command -v ffmpeg &>/dev/null || { err "ffmpeg required for audio extraction"; return 1; }
+
+    local audio_out="${CACHE_DIR}/transcribe_audio_$$.${fmt}"
+    local stream_args=()
+
+    # Try to select audio track matching language hint
+    if [[ -n "$lang" ]]; then
+        local stream_ref
+        if stream_ref=$(_find_audio_stream "$video" "$lang"); then
+            local audio_idx="${stream_ref#a:}"
+            stream_args=(-map "0:a:${audio_idx}")
+            debug "Audio extraction: using track $stream_ref ($lang)" || true
+        fi
+    fi
+
+    # If no specific track found, use first audio
+    [[ ${#stream_args[@]} -eq 0 ]] && stream_args=(-map "0:a:0")
+
+    local codec_args=()
+    if [[ "$fmt" == "wav" ]]; then
+        codec_args=(-ar 16000 -ac 1 -c:a pcm_s16le)
+    else
+        # MP3 at 48kbps for API (keeps file small, ~70min fits under 25MB)
+        codec_args=(-ar 16000 -ac 1 -b:a 48k)
+    fi
+
+    if ffmpeg -v error -i "$video" "${stream_args[@]}" "${codec_args[@]}" "$audio_out" -y 2>/dev/null; then
+        if [[ -s "$audio_out" ]]; then
+            echo "$audio_out"
+            return 0
+        fi
+    fi
+    rm -f "$audio_out"
+    err "Audio extraction failed"
+    return 1
+}
+
+# Transcribe using local whisper CLI
+transcribe_with_whisper() {
+    local audio="$1" output="$2" lang="${3:-}"
+
+    local whisper_cmd="whisper"
+    if ! command -v whisper &>/dev/null; then
+        if command -v uvx &>/dev/null; then
+            whisper_cmd="uvx openai-whisper"
+            info "Using uvx openai-whisper"
+        else
+            die "whisper not available. Install: pip install openai-whisper (or: uvx openai-whisper)"
+        fi
+    fi
+
+    local args=("$audio" --model "$WHISPER_MODEL" --output_format srt --output_dir "$CACHE_DIR")
+    [[ -n "$lang" ]] && args+=(--language "$lang")
+
+    info "Transcribing with whisper (model: $WHISPER_MODEL)..."
+    if $whisper_cmd "${args[@]}" 2>&1 | while IFS= read -r line; do debug "whisper: $line" || true; done; then
+        # Whisper outputs <basename>.srt in the output dir
+        local audio_basename
+        audio_basename=$(basename "$audio")
+        local whisper_out="${CACHE_DIR}/${audio_basename%.*}.srt"
+        if [[ -s "$whisper_out" ]]; then
+            mv "$whisper_out" "$output"
+            return 0
+        fi
+    fi
+    err "Whisper transcription failed"
+    return 1
+}
+
+# Transcribe using OpenAI API (Whisper endpoint)
+transcribe_with_openai_api() {
+    local audio="$1" output="$2" lang="${3:-}"
+
+    [[ -z "${OPENAI_API_KEY:-}" ]] && die "OPENAI_API_KEY required for openai-api transcription"
+
+    # Check file size (25MB limit)
+    local filesize
+    filesize=$(stat -f%z "$audio" 2>/dev/null || stat -c%s "$audio" 2>/dev/null)
+    if [[ "$filesize" -gt 26214400 ]]; then
+        err "Audio file too large for OpenAI API (${filesize} bytes, max 25MB)"
+        return 1
+    fi
+
+    info "Transcribing via OpenAI API..."
+    local curl_args=(-sf "https://api.openai.com/v1/audio/transcriptions"
+        -H "Authorization: Bearer $OPENAI_API_KEY"
+        -F "file=@${audio}"
+        -F "model=whisper-1"
+        -F "response_format=srt")
+    [[ -n "$lang" ]] && curl_args+=(-F "language=${lang}")
+
+    local resp
+    if resp=$(api_retry curl "${curl_args[@]}"); then
+        echo "$resp" > "$output"
+        return 0
+    fi
+    err "OpenAI transcription API error"
+    return 1
+}
+
+# Dispatch transcription to selected provider
+_transcribe_dispatch() {
+    local audio="$1" output="$2" lang="$3" provider="$4"
+    case "$provider" in
+        whisper)     transcribe_with_whisper "$audio" "$output" "$lang" ;;
+        openai-api)  transcribe_with_openai_api "$audio" "$output" "$lang" ;;
+        *) die "Unknown transcription provider: $provider" ;;
+    esac
+}
+
+# Orchestrator: video -> SRT via speech-to-text
+# Usage: transcribe_video video output [lang] [provider]
+transcribe_video() {
+    local video="$1" output="$2" lang="${3:-}" provider="${4:-$TRANSCRIBE_PROVIDER}"
+
+    header "Transcription ($provider)"
+    info "Video: $(basename "$video")"
+    [[ -n "$lang" ]] && info "Language hint: $lang"
+
+    # Choose audio format: WAV for local whisper, MP3 for API
+    local audio_fmt="wav"
+    [[ "$provider" == "openai-api" ]] && audio_fmt="mp3"
+
+    local audio_file
+    audio_file=$(_extract_audio "$video" "$audio_fmt" "$lang") || return 1
+
+    if _transcribe_dispatch "$audio_file" "$output" "$lang" "$provider"; then
+        rm -f "$audio_file"
+        if validate_srt "$output"; then
+            local sub_count
+            sub_count=$(grep -cE '^[0-9]+$' "$output" 2>/dev/null || echo "0")
+            log "Transcription OK: $sub_count subtitles generated"
+            return 0
+        else
+            warn "Transcription output is not valid SRT"
+            rm -f "$output"
+            return 1
+        fi
+    fi
+    rm -f "$audio_file"
+    return 1
+}
+
 # Main translation with chunking
 translate_subtitle() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4" provider="$5"
@@ -997,6 +1158,7 @@ ${BOLD}USAGE${NC}
 
 ${BOLD}COMMANDS${NC}
     auto        All-in-one: download + translate + embed (file or directory)
+    transcribe  Generate subtitles from video audio (speech-to-text)
     get         Smart search (auto-parse title/season/episode)
     search      Manual search (with -q/-s/-e)
     batch       Download a full season (with -s)
@@ -1040,6 +1202,9 @@ ${BOLD}OPTIONS${NC}
     --no-embed                Disable automatic embedding
     --force-embed             Force embed even if subtitles already present (adds new track)
     --force-translate         Force translation even if subtitles found
+    --transcribe-provider <p> Transcription provider (whisper|openai-api)
+    --whisper-model <model>   Whisper model (tiny, base, small, medium, large)
+    --no-transcribe           Disable transcription fallback in auto mode
     --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
     --auto                    Automatically select most downloaded result
     --dry-run                 Display results without downloading
@@ -1090,6 +1255,12 @@ ${BOLD}EXAMPLES${NC}
     $SCRIPT_NAME extract movie.mkv
     $SCRIPT_NAME embed movie.mkv --sub movie.fr.srt -l fr
 
+    # Transcribe (generate subtitles from audio)
+    $SCRIPT_NAME transcribe movie.mkv
+    $SCRIPT_NAME transcribe movie.mkv --from en
+    $SCRIPT_NAME transcribe movie.mkv --transcribe-provider openai-api
+    $SCRIPT_NAME transcribe movie.mkv --whisper-model large
+
     # Auto sync with video (ffsubsync)
     $SCRIPT_NAME autosync desync.srt --ref movie.mkv
     $SCRIPT_NAME autosync desync.srt --ref reference.srt
@@ -1133,6 +1304,23 @@ cmd_providers() {
 
     if [[ -n "${GEMINI_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
     printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "gemini" "$MODEL_GEMINI" "Google Gemini API"
+
+    printf "\n"
+    header "Transcription providers"
+    printf "  ${BOLD}%-15s${NC} %-10s %-25s %s\n" "Provider" "Status" "Model" "Description"
+    printf "  %-15s %-10s %-25s %s\n" "───────────────" "──────────" "─────────────────────────" "──────────────────────"
+
+    if command -v whisper &>/dev/null; then
+        status="${GREEN}OK${NC}"
+    elif command -v uvx &>/dev/null; then
+        status="${GREEN}OK${NC} (uvx)"
+    else
+        status="${RED}N/A${NC}"
+    fi
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "whisper" "$WHISPER_MODEL" "Local Whisper (default, free)"
+
+    if [[ -n "${OPENAI_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "openai-api" "whisper-1" "OpenAI Whisper API"
 }
 
 # ── Command: config ───────────────────────────────────────────────────────────
@@ -1221,6 +1409,13 @@ cmd_check() {
         printf "  ${GREEN}OK${NC}  %-15s\n" "claude-code"
     else
         printf "  ${YELLOW}N/A${NC}  %-15s (provider claude-code)\n" "claude CLI"
+    fi
+    if command -v whisper &>/dev/null; then
+        printf "  ${GREEN}OK${NC}  %-15s %s\n" "whisper" "$(command -v whisper)"
+    elif command -v uvx &>/dev/null; then
+        printf "  ${GREEN}OK${NC}  %-15s %s\n" "whisper" "via uvx (on the fly)"
+    else
+        printf "  ${YELLOW}N/A${NC}  %-15s (transcription) — pip install openai-whisper or: uvx openai-whisper\n" "whisper"
     fi
 
     # API keys
@@ -2018,6 +2213,44 @@ cmd_auto() {
             fi
         fi
 
+        # ── Step 2b: Transcribe from video audio (fallback) ──
+        if [[ -z "$existing_srt" ]] && ! $NO_TRANSCRIBE; then
+            if command -v ffmpeg &>/dev/null; then
+                info "No subtitles found — trying transcription..."
+                local transcribed_srt="${CACHE_DIR}/transcribe_auto_$$.srt"
+                if transcribe_video "$video_file" "$transcribed_srt" "" "$TRANSCRIBE_PROVIDER"; then
+                    # Detect language of transcribed subtitle
+                    local tr_sample
+                    tr_sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$transcribed_srt" | head -20 | tr '\n' ' ' || true)
+                    local tr_lang
+                    tr_lang=$(detect_lang "$tr_sample")
+                    [[ -z "$tr_lang" ]] && tr_lang="und"
+                    info "Transcribed language: $tr_lang"
+
+                    if [[ "$tr_lang" == "$target" ]]; then
+                        # Transcribed in target language — use directly
+                        mv "$transcribed_srt" "$target_srt"
+                        log "Transcribed ($tr_lang): $(basename "$target_srt")"
+                        ((success++)) || true
+                        _auto_sync "$video_file" "$target_srt" "$target"
+                        if $do_embed; then
+                            _auto_embed "$video_file" "$target_srt" "$target" && \
+                                _auto_cleanup "$target_srt"
+                        fi
+                        continue
+                    else
+                        # Transcribed in different language — pass to translation step
+                        local tr_path="${dir_name}/${name_no_ext}.${tr_lang}.srt"
+                        mv "$transcribed_srt" "$tr_path"
+                        existing_srt="$tr_path"
+                        existing_lang="$tr_lang"
+                    fi
+                else
+                    debug "Transcription failed — continuing without subtitles" || true
+                fi
+            fi
+        fi
+
         # ── Step 3: Translate if we have a subtitle in another language ──
         if [[ -n "$existing_srt" && "$existing_lang" != "$target" ]]; then
             info "Translation: $existing_lang -> $target"
@@ -2356,6 +2589,39 @@ cmd_translate() {
 
     local src_lang="${SRC_LANG:-}"
     translate_local_file "$FILE_PATH" "$src_lang" "$LANG_TARGET" "$AI_PROVIDER"
+}
+
+# ── Command: transcribe (video -> SRT via speech-to-text) ────────────────────
+cmd_transcribe() {
+    [[ -z "$FILE_PATH" ]] && die "Specify a video file (e.g., subtool transcribe video.mkv)"
+    [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
+    if ! command -v ffmpeg &>/dev/null; then
+        die "ffmpeg required for transcription. Install it: brew install ffmpeg"
+    fi
+
+    local src_lang="${SRC_LANG:-}"
+    local output_srt="${CACHE_DIR}/transcribe_$$.srt"
+
+    if ! transcribe_video "$FILE_PATH" "$output_srt" "$src_lang" "$TRANSCRIBE_PROVIDER"; then
+        die "Transcription failed"
+    fi
+
+    # Auto-detect language from transcription output
+    local detected_lang="$src_lang"
+    if [[ -z "$detected_lang" ]]; then
+        local sample
+        sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$output_srt" | head -20 | tr '\n' ' ' || true)
+        detected_lang=$(detect_lang "$sample")
+        [[ -z "$detected_lang" ]] && detected_lang="und"
+        info "Detected language: $detected_lang"
+    fi
+
+    # Build final output path
+    local base_name
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    local final_output="${OUTPUT_DIR}/${base_name}.${detected_lang}.srt"
+    mv "$output_srt" "$final_output"
+    log "Transcription saved: $final_output"
 }
 
 # ── Command: info (SRT file stats) ───────────────────────────────────────────
@@ -3031,7 +3297,7 @@ CONFIG_VALUE=""
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            get|search|translate|batch|scan|auto|info|clean|sync|autosync|convert|merge|fix|extract|embed|providers|sources|check)
+            get|search|translate|transcribe|batch|scan|auto|info|clean|sync|autosync|convert|merge|fix|extract|embed|providers|sources|check)
                 COMMAND="$1"; shift ;;
             config)
                 COMMAND="config"; shift
@@ -3062,6 +3328,9 @@ parse_args() {
             --ref)         AUTOSYNC_REF="$2"; shift 2 ;;
             --ref-stream)  AUTOSYNC_REF_STREAM="$2"; shift 2 ;;
             --force-translate) FORCE_TRANSLATE=true; shift ;;
+            --transcribe-provider) TRANSCRIBE_PROVIDER="$2"; shift 2 ;;
+            --whisper-model) WHISPER_MODEL="$2"; shift 2 ;;
+            --no-transcribe) NO_TRANSCRIBE=true; shift ;;
             --keep-files)  KEEP_FILES=true; shift ;;
             --auto)        AUTO_SELECT=true; shift ;;
             --embed)       AUTO_EMBED=true; shift ;;
@@ -3111,6 +3380,7 @@ main() {
         get)       cmd_get ;;
         search)    cmd_search ;;
         translate) cmd_translate ;;
+        transcribe) cmd_transcribe ;;
         batch)     cmd_batch ;;
         scan)      cmd_scan ;;
         auto)      cmd_auto ;;

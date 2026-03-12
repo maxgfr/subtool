@@ -100,12 +100,19 @@ assert_output_contains "--help contains --dry-run" "$out" "\-\-dry-run"
 assert_output_contains "--help contains --json" "$out" "\-\-json"
 assert_output_contains "--help contains --verbose" "$out" "\-\-verbose"
 assert_output_contains "--help contains --quiet" "$out" "\-\-quiet"
+assert_output_contains "--help contains transcribe" "$out" "transcribe"
+assert_output_contains "--help contains --whisper-model" "$out" "\-\-whisper-model"
+assert_output_contains "--help contains --no-transcribe" "$out" "\-\-no-transcribe"
+assert_output_contains "--help contains --transcribe-provider" "$out" "\-\-transcribe-provider"
 
 out=$("$SUBSYNC" providers 2>&1)
 assert_output_contains "providers lists claude-code" "$out" "claude-code"
 assert_output_contains "providers lists zai-codeplan" "$out" "zai-codeplan"
 assert_output_contains "providers lists openai" "$out" "openai"
 assert_output_contains "providers lists gemini" "$out" "gemini"
+assert_output_contains "providers lists transcription section" "$out" "Transcription providers"
+assert_output_contains "providers lists whisper" "$out" "whisper"
+assert_output_contains "providers lists openai-api" "$out" "openai-api"
 
 out=$("$SUBSYNC" sources 2>&1)
 assert_output_contains "sources lists opensubtitles-org" "$out" "opensubtitles-org"
@@ -124,6 +131,12 @@ assert_output_contains "get without args -> error" "$out" "Specify"
 out=$("$SUBSYNC" --nonexistent 2>&1 || true)
 assert_output_contains "unknown option -> error" "$out" "Unknown"
 
+out=$("$SUBSYNC" transcribe 2>&1 || true)
+assert_output_contains "transcribe without args -> error" "$out" "Specify"
+
+out=$("$SUBSYNC" transcribe /nonexistent/file.mkv 2>&1 || true)
+assert_output_contains "transcribe non-existent file -> error" "$out" "not found"
+
 # ══════════════════════════════════════════════════════════════════════════════
 section "check (diagnostic)"
 
@@ -131,6 +144,7 @@ out=$("$SUBSYNC" check 2>&1)
 assert_output_contains "check: shows jq" "$out" "jq"
 assert_output_contains "check: shows curl" "$out" "curl"
 assert_output_contains "check: shows Config" "$out" "Config"
+assert_output_contains "check: shows whisper" "$out" "whisper"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "config set/get"
@@ -1330,6 +1344,76 @@ if echo "$out" | grep -q "Searching on.*podnapisi"; then
     assert "default source: no podnapisi" 1
 else
     assert "default source: no podnapisi" 0
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "transcribe"
+
+# Error cases already tested in CLI basics (no args, non-existent file)
+
+# Flag acceptance: --transcribe-provider, --whisper-model, --no-transcribe
+out=$("$SUBSYNC" transcribe /nonexistent/file.mkv --transcribe-provider openai-api 2>&1 || true)
+assert_output_contains "transcribe --transcribe-provider: accepted" "$out" "not found"
+
+out=$("$SUBSYNC" transcribe /nonexistent/file.mkv --whisper-model tiny 2>&1 || true)
+assert_output_contains "transcribe --whisper-model: accepted" "$out" "not found"
+
+# Unknown provider
+out=$("$SUBSYNC" transcribe /nonexistent/file.mkv --transcribe-provider nonexistent 2>&1 || true)
+assert_output_contains "transcribe unknown provider: file error first" "$out" "not found"
+
+# config: transcription config keys exist in template
+out=$(XDG_CONFIG_HOME="$TMP_DIR/xdg_transcribe" "$SUBSYNC" check 2>&1)
+config_content=$(cat "$TMP_DIR/xdg_transcribe/subtool/config" 2>/dev/null || true)
+if echo "$config_content" | grep -q "DEFAULT_TRANSCRIBE_PROVIDER"; then
+    assert "config template: has DEFAULT_TRANSCRIBE_PROVIDER" 0
+else
+    assert "config template: has DEFAULT_TRANSCRIBE_PROVIDER" 1
+fi
+if echo "$config_content" | grep -q "WHISPER_MODEL"; then
+    assert "config template: has WHISPER_MODEL" 0
+else
+    assert "config template: has WHISPER_MODEL" 1
+fi
+
+# providers output: check transcription section details
+out=$("$SUBSYNC" providers 2>&1)
+assert_output_contains "providers: whisper shows model" "$out" "medium"
+assert_output_contains "providers: openai-api shows whisper-1" "$out" "whisper-1"
+assert_output_contains "providers: whisper description" "$out" "Local Whisper"
+assert_output_contains "providers: openai-api description" "$out" "OpenAI Whisper API"
+
+# check output: whisper status
+out=$("$SUBSYNC" check 2>&1)
+# Should show "via uvx" or the path or "N/A" for whisper
+if command -v whisper &>/dev/null; then
+    assert_output_contains "check: whisper installed" "$out" "whisper.*OK"
+elif command -v uvx &>/dev/null; then
+    assert_output_contains "check: whisper via uvx" "$out" "whisper.*via uvx"
+else
+    assert_output_contains "check: whisper N/A" "$out" "whisper.*N/A"
+fi
+
+# Functional test: transcribe a synthetic test video (gated on whisper + ffmpeg)
+if command -v ffmpeg &>/dev/null && (command -v whisper &>/dev/null || command -v uvx &>/dev/null); then
+    # Generate a 2-second silent video for smoke test
+    test_video="$TMP_DIR/test_transcribe.mkv"
+    ffmpeg -v error -f lavfi -i "anullsrc=r=16000:cl=mono" -f lavfi -i "color=c=black:s=320x240:r=1" \
+        -t 2 -c:a pcm_s16le -c:v libx264 -shortest "$test_video" -y 2>/dev/null || true
+    if [[ -s "$test_video" ]]; then
+        # Transcribe with tiny model (fastest) — should succeed even on silent audio
+        out=$("$SUBSYNC" transcribe "$test_video" --whisper-model tiny -o "$TMP_DIR" 2>&1 || true)
+        # The output may be empty subtitles or succeed — we check it doesn't crash unexpectedly
+        if echo "$out" | grep -qE "Transcription saved|Transcription OK|Transcription failed"; then
+            assert "transcribe functional: runs without crash" 0
+        else
+            assert "transcribe functional: runs without crash" 1
+        fi
+    else
+        printf "  ${YELLOW}SKIP${NC}  transcribe functional: ffmpeg couldn't create test video\n"
+    fi
+else
+    printf "  ${YELLOW}SKIP${NC}  transcribe functional: whisper/ffmpeg not available\n"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
