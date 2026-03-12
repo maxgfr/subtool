@@ -1,6 +1,6 @@
 # subtool
 
-All-in-one CLI for subtitle management: download, translate, convert, sync, clean, merge, fix, extract, and embed subtitles.
+All-in-one CLI for subtitle management: download, translate, transcribe, convert, sync, clean, merge, fix, extract, and embed subtitles.
 
 ## Features
 
@@ -8,7 +8,8 @@ All-in-one CLI for subtitle management: download, translate, convert, sync, clea
 - **Multi-language** — download subtitles in multiple languages at once (`-l en,fr`)
 - **Fast translation** with Google Translate (default, via [translate-shell](https://github.com/soimort/translate-shell)) — no API key needed
 - **AI translation** with Claude Code, OpenAI, Gemini, Mistral, etc.
-- **Auto mode** — one command: download + translate + sync + embed (`subtool auto`)
+- **Auto mode** — one command: download + translate + sync + embed (`subtool auto`), with transcription fallback
+- **Transcription** — generate subtitles from video audio via Whisper (local) or OpenAI API
 - **Smart parsing** — auto-detects movies, episodes, seasons, ranges, IMDb IDs
 - **Format conversion** between SRT, VTT, and ASS
 - **Subtitle tools**: info, clean, sync, fix, merge, extract, embed
@@ -41,6 +42,7 @@ sudo mv subtool /usr/local/bin/
 - `translate-shell` — Google Translate CLI (default translation provider). Install: `brew install translate-shell`
 - `ffmpeg` / `ffprobe` (optional) — extract/embed subtitles, video analysis
 - `ffsubsync` (optional) — auto-sync subtitles with video. Runs automatically via `uvx` if [uv](https://docs.astral.sh/uv/) is installed, or install permanently with `uv tool install ffsubsync`
+- `openai-whisper` (optional) — speech-to-text transcription. Runs automatically via `uvx` if uv is installed, or install with `pip install openai-whisper`
 
 ## Translation Providers
 
@@ -69,6 +71,23 @@ subtool translate subs.srt -l fr -p claude-code -m sonnet
 subtool translate subs.srt -l fr -p openai
 ```
 
+## Transcription Providers
+
+Generate subtitles from video audio when no subtitles are available online.
+
+| Provider | ID | Description |
+|---|---|---|
+| **Whisper** | `whisper` | Default. Local, free. Uses [openai-whisper](https://github.com/openai/whisper) (or `uvx openai-whisper`) |
+| **OpenAI API** | `openai-api` | Cloud. Requires `OPENAI_API_KEY`. 25MB file limit. |
+
+```bash
+# Transcribe video to subtitles
+subtool transcribe movie.mkv                             # auto-detect language
+subtool transcribe movie.mkv --from en                   # hint source language
+subtool transcribe movie.mkv --whisper-model large        # use larger model
+subtool transcribe movie.mkv --transcribe-provider openai-api  # use cloud API
+```
+
 ## Usage
 
 ```bash
@@ -79,6 +98,12 @@ subtool auto ~/Movies/Die.Discounter -l fr -p openai      # use OpenAI for trans
 subtool auto movie.mkv -l fr                              # single file
 subtool auto ~/Movies/Die.Discounter -l en,fr             # multi-language
 subtool auto ~/Movies/Die.Discounter -l fr --no-embed     # skip embed
+subtool auto movie.mkv -l fr --force-transcribe           # skip download, always transcribe
+subtool auto movie.mkv -l fr --no-transcribe              # disable transcription fallback
+
+# Transcribe (generate subtitles from audio)
+subtool transcribe movie.mkv
+subtool transcribe movie.mkv --from en --whisper-model large
 
 # Download subtitles
 subtool get -q "Inception 2010" -l fr
@@ -144,6 +169,10 @@ subtool check
 | `--no-embed` | Disable auto-embed in `auto` mode |
 | `--url <url>` | Provide a subtitle URL directly for download |
 | `--json` | Output results as JSON (implies `--quiet`) |
+| `--transcribe-provider <p>` | Transcription provider (`whisper` or `openai-api`) |
+| `--whisper-model <model>` | Whisper model size (`tiny`, `base`, `small`, `medium`, `large`) |
+| `--force-transcribe` | Force transcription in `auto` (skip subtitle download) |
+| `--no-transcribe` | Disable transcription fallback in `auto` mode |
 | `--verbose` | Show debug output |
 | `--quiet` | Suppress informational messages |
 
@@ -186,6 +215,10 @@ ANTHROPIC_API_KEY="..."
 MISTRAL_API_KEY="..."
 GEMINI_API_KEY="..."
 ZAI_API_KEY="..."
+
+# Transcription settings
+DEFAULT_TRANSCRIBE_PROVIDER=""   # whisper (default) or openai-api
+WHISPER_MODEL=""                 # tiny, base, small, medium (default), large
 ```
 
 ## Smart Query Parsing

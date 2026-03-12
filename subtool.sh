@@ -949,7 +949,7 @@ transcribe_with_whisper() {
     local whisper_cmd="whisper"
     if ! command -v whisper &>/dev/null; then
         if command -v uvx &>/dev/null; then
-            whisper_cmd="uvx openai-whisper"
+            whisper_cmd="uvx --from openai-whisper whisper"
             info "Using uvx openai-whisper"
         else
             die "whisper not available. Install: pip install openai-whisper (or: uvx openai-whisper)"
@@ -960,7 +960,9 @@ transcribe_with_whisper() {
     [[ -n "$lang" ]] && args+=(--language "$lang")
 
     info "Transcribing with whisper (model: $WHISPER_MODEL)..."
-    if $whisper_cmd "${args[@]}" 2>&1 | while IFS= read -r line; do debug "whisper: $line" || true; done; then
+    local whisper_output
+    if whisper_output=$($whisper_cmd "${args[@]}" 2>&1); then
+        debug "whisper output: $whisper_output" || true
         # Whisper outputs <basename>.srt in the output dir
         local audio_basename
         audio_basename=$(basename "$audio")
@@ -969,6 +971,8 @@ transcribe_with_whisper() {
             mv "$whisper_out" "$output"
             return 0
         fi
+    else
+        debug "whisper error: $whisper_output" || true
     fi
     err "Whisper transcription failed"
     return 1
