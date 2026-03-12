@@ -39,6 +39,7 @@ SUBTITLE_URL=""
 TRANSCRIBE_PROVIDER="whisper"
 WHISPER_MODEL=""
 NO_TRANSCRIBE=false
+FORCE_TRANSCRIBE=false
 
 # ── Default models ────────────────────────────────────────────────────────────
 MODEL_ZAI_CODEPLAN="glm-4.7"
@@ -1205,6 +1206,7 @@ ${BOLD}OPTIONS${NC}
     --transcribe-provider <p> Transcription provider (whisper|openai-api)
     --whisper-model <model>   Whisper model (tiny, base, small, medium, large)
     --no-transcribe           Disable transcription fallback in auto mode
+    --force-transcribe        Force transcription (skip subtitle download in auto)
     --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
     --auto                    Automatically select most downloaded result
     --dry-run                 Display results without downloading
@@ -2052,6 +2054,7 @@ cmd_auto() {
     header "subtool auto"
     info "Target language: $target"
     $do_embed && info "Embed: active" || info "Embed: inactive (ffmpeg required)"
+    $FORCE_TRANSCRIBE && info "Transcription: forced (skipping subtitle search)"
     if $KEEP_FILES; then
         info "Keep files: active (SRT files preserved after embed)"
     elif $do_embed; then
@@ -2096,6 +2099,13 @@ cmd_auto() {
 
         printf "\n${BOLD}── %s ──${NC}\n" "$base_name" >&2
 
+        local existing_srt="" existing_lang=""
+
+        if $FORCE_TRANSCRIBE; then
+            # Skip steps 0-2 (download), go straight to transcription
+            debug "Force transcribe: skipping subtitle search" || true
+        else
+
         # ── Step 0: Try extracting embedded subtitle in target language ──
         if command -v ffmpeg &>/dev/null && command -v ffprobe &>/dev/null; then
             local embedded_idx
@@ -2113,7 +2123,6 @@ cmd_auto() {
         fi
 
         # ── Step 1: Check for existing external subtitle in any language ──
-        local existing_srt="" existing_lang=""
         for srt_file in "${dir_name}/${name_no_ext}".*.srt; do
             [[ -f "$srt_file" ]] || continue
             # Extract lang code from filename (name.XX.srt)
@@ -2213,10 +2222,12 @@ cmd_auto() {
           fi
         fi
 
-        # ── Step 2b: Transcribe from video audio (fallback) ──
-        if [[ -z "$existing_srt" ]] && ! $NO_TRANSCRIBE; then
+        fi # end if ! FORCE_TRANSCRIBE
+
+        # ── Step 2b: Transcribe from video audio (fallback or forced) ──
+        if { [[ -z "$existing_srt" ]] || $FORCE_TRANSCRIBE; } && ! $NO_TRANSCRIBE; then
             if command -v ffmpeg &>/dev/null; then
-                info "No subtitles found — trying transcription..."
+                $FORCE_TRANSCRIBE && info "Forced transcription..." || info "No subtitles found — trying transcription..."
                 local transcribed_srt="${CACHE_DIR}/transcribe_auto_$$.srt"
                 if transcribe_video "$video_file" "$transcribed_srt" "" "$TRANSCRIBE_PROVIDER"; then
                     # Detect language of transcribed subtitle
@@ -3331,6 +3342,7 @@ parse_args() {
             --transcribe-provider) TRANSCRIBE_PROVIDER="$2"; shift 2 ;;
             --whisper-model) WHISPER_MODEL="$2"; shift 2 ;;
             --no-transcribe) NO_TRANSCRIBE=true; shift ;;
+            --force-transcribe) FORCE_TRANSCRIBE=true; shift ;;
             --keep-files)  KEEP_FILES=true; shift ;;
             --auto)        AUTO_SELECT=true; shift ;;
             --embed)       AUTO_EMBED=true; shift ;;

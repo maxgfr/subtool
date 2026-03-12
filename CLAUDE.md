@@ -46,7 +46,7 @@ Google provider does its own chunking internally. LLM providers use `chunk_srt()
 
 ### `auto` command
 
-All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file or directory as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable).
+All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file or directory as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable, `--force-transcribe` to skip download and always transcribe).
 
 ### `transcribe` command
 

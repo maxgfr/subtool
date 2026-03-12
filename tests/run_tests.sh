@@ -104,6 +104,7 @@ assert_output_contains "--help contains transcribe" "$out" "transcribe"
 assert_output_contains "--help contains --whisper-model" "$out" "\-\-whisper-model"
 assert_output_contains "--help contains --no-transcribe" "$out" "\-\-no-transcribe"
 assert_output_contains "--help contains --transcribe-provider" "$out" "\-\-transcribe-provider"
+assert_output_contains "--help contains --force-transcribe" "$out" "\-\-force-transcribe"
 
 out=$("$SUBSYNC" providers 2>&1)
 assert_output_contains "providers lists claude-code" "$out" "claude-code"
