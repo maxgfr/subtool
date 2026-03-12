@@ -1387,11 +1387,11 @@ assert_output_contains "providers: openai-api description" "$out" "OpenAI Whispe
 out=$("$SUBSYNC" check 2>&1)
 # Should show "via uvx" or the path or "N/A" for whisper
 if command -v whisper &>/dev/null; then
-    assert_output_contains "check: whisper installed" "$out" "whisper.*OK"
+    assert_output_contains "check: whisper installed" "$out" "OK.*whisper"
 elif command -v uvx &>/dev/null; then
     assert_output_contains "check: whisper via uvx" "$out" "whisper.*via uvx"
 else
-    assert_output_contains "check: whisper N/A" "$out" "whisper.*N/A"
+    assert_output_contains "check: whisper N/A" "$out" "N/A.*whisper"
 fi
 
 # Functional test: transcribe a synthetic test video (gated on whisper + ffmpeg)

@@ -2142,10 +2142,9 @@ cmd_auto() {
 
             if [[ -z "$PARSED_TITLE" && -z "$PARSED_IMDB" ]]; then
                 warn "Unable to parse: $base_name"
-                ((fail++)) || true
-                continue
             fi
 
+          if [[ -n "$PARSED_TITLE" || -n "$PARSED_IMDB" ]]; then
             # Try target language first
             local results=""
             if results=$(search_all_sources "$PARSED_TITLE" "$target" "$PARSED_IMDB" "$PARSED_SEASON" "$PARSED_EPISODE" 2>/dev/null); then
@@ -2211,6 +2210,7 @@ cmd_auto() {
                     fi
                 fi
             fi
+          fi
         fi
 
         # ── Step 2b: Transcribe from video audio (fallback) ──
