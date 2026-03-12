@@ -959,10 +959,9 @@ transcribe_with_whisper() {
     local args=("$audio" --model "$WHISPER_MODEL" --output_format srt --output_dir "$CACHE_DIR")
     [[ -n "$lang" ]] && args+=(--language "$lang")
 
-    info "Transcribing with whisper (model: $WHISPER_MODEL)..."
-    local whisper_output
-    if whisper_output=$($whisper_cmd "${args[@]}" 2>&1); then
-        debug "whisper output: $whisper_output" || true
+    info "Transcribing with whisper (model: $WHISPER_MODEL)... this may take a while"
+    # Run whisper with output flowing directly to stderr so user sees progress
+    if $whisper_cmd "${args[@]}" >&2; then
         # Whisper outputs <basename>.srt in the output dir
         local audio_basename
         audio_basename=$(basename "$audio")
@@ -971,10 +970,10 @@ transcribe_with_whisper() {
             mv "$whisper_out" "$output"
             return 0
         fi
+        err "Whisper ran but produced no SRT output"
     else
-        debug "whisper error: $whisper_output" || true
+        err "Whisper process exited with error"
     fi
-    err "Whisper transcription failed"
     return 1
 }
 
