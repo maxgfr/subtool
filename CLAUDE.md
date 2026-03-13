@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Single bash script (`subtool.sh`, ~2670 lines) for subtitle management: download, translate, convert, sync, clean, merge, fix, extract, embed.
+Single bash script (`subtool.sh`, ~3400 lines) for subtitle management: download, translate, transcribe, convert, sync, clean, merge, fix, extract, embed.
 
 ## Architecture
 
@@ -50,7 +50,7 @@ All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a fil
 
 ### `transcribe` command
 
-Generate subtitles from video audio via speech-to-text. Providers: `whisper` (default, local) and `openai-api` (cloud). Language auto-detected from output. Use `--from` to hint source language, `--whisper-model` to select model size (tiny/base/small/medium/large), `--transcribe-provider` to switch provider.
+Generate subtitles from video audio via speech-to-text. Providers: `whisper` (default, local) and `openai-api` (cloud). Language auto-detected from output. Auto-syncs with video via ffsubsync after transcription. Use `--from` to hint source language, `--whisper-model` to select model size (tiny/base/small/medium/large), `--transcribe-provider` to switch provider.
 
 ## CLI
 

@@ -78,7 +78,7 @@ Generate subtitles from video audio when no subtitles are available online.
 | Provider | ID | Description |
 |---|---|---|
 | **Whisper** | `whisper` | Default. Local, free. Uses [openai-whisper](https://github.com/openai/whisper) (or `uvx openai-whisper`) |
-| **OpenAI API** | `openai-api` | Cloud. Requires `OPENAI_API_KEY`. 25MB file limit. |
+| **OpenAI API** | `openai-api` | Cloud. Requires `OPENAI_WHISPER_API_KEY` or `OPENAI_API_KEY`. 25MB file limit. |
 
 ```bash
 # Transcribe video to subtitles
