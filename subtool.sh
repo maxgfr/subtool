@@ -213,6 +213,9 @@ MISTRAL_API_KEY=""
 GEMINI_API_KEY=""
 ZAI_API_KEY=""
 
+# Separate API key for transcription (falls back to OPENAI_API_KEY if empty)
+OPENAI_WHISPER_API_KEY=""
+
 # Default language (e.g., fr, en, de — so you don't need -l every time)
 DEFAULT_LANG=""
 
@@ -230,7 +233,7 @@ MODEL_GEMINI=""
 # Default transcription provider: whisper, openai-api
 DEFAULT_TRANSCRIBE_PROVIDER=""
 
-# Whisper model (tiny, base, small, medium, large) — leave empty for "medium"
+# Whisper model (tiny, base, small, medium, large) — leave empty for "small"
 WHISPER_MODEL=""
 CONF
         info "Config created: $CONFIG_FILE"
@@ -245,6 +248,7 @@ load_config() {
     local _saved_mistral="${MISTRAL_API_KEY:-}"
     local _saved_gemini="${GEMINI_API_KEY:-}"
     local _saved_zai="${ZAI_API_KEY:-}"
+    local _saved_openai_whisper="${OPENAI_WHISPER_API_KEY:-}"
     # shellcheck source=/dev/null
     [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
     # Env vars take priority over config file
@@ -253,6 +257,7 @@ load_config() {
     [[ -n "$_saved_mistral" ]] && MISTRAL_API_KEY="$_saved_mistral"
     [[ -n "$_saved_gemini" ]] && GEMINI_API_KEY="$_saved_gemini"
     [[ -n "$_saved_zai" ]] && ZAI_API_KEY="$_saved_zai"
+    [[ -n "$_saved_openai_whisper" ]] && OPENAI_WHISPER_API_KEY="$_saved_openai_whisper"
     # Restore default models if config set them empty
     [[ -z "${MODEL_CLAUDE_CODE:-}" ]] && MODEL_CLAUDE_CODE="haiku"
     [[ -z "$MODEL_ZAI_CODEPLAN" ]] && MODEL_ZAI_CODEPLAN="glm-4.7"
@@ -262,7 +267,7 @@ load_config() {
     [[ -z "$MODEL_GEMINI" ]] && MODEL_GEMINI="gemini-2.5-flash"
     AI_PROVIDER="${DEFAULT_AI_PROVIDER:-google}"
     TRANSCRIBE_PROVIDER="${DEFAULT_TRANSCRIBE_PROVIDER:-whisper}"
-    [[ -z "${WHISPER_MODEL:-}" ]] && WHISPER_MODEL="medium"
+    [[ -z "${WHISPER_MODEL:-}" ]] && WHISPER_MODEL="small"
     # Apply default language from config (CLI -l flag overrides later in parse_args)
     [[ -z "$LANG_TARGET" && -n "${DEFAULT_LANG:-}" ]] && LANG_TARGET="$DEFAULT_LANG" || true
 }
@@ -956,7 +961,8 @@ transcribe_with_whisper() {
         fi
     fi
 
-    local args=("$audio" --model "$WHISPER_MODEL" --output_format srt --output_dir "$CACHE_DIR")
+    local args=("$audio" --model "$WHISPER_MODEL" --output_format srt --output_dir "$CACHE_DIR"
+        --condition_on_previous_text False)
     [[ -n "$lang" ]] && args+=(--language "$lang")
 
     info "Transcribing with whisper (model: $WHISPER_MODEL)... this may take a while"
@@ -981,7 +987,9 @@ transcribe_with_whisper() {
 transcribe_with_openai_api() {
     local audio="$1" output="$2" lang="${3:-}"
 
-    [[ -z "${OPENAI_API_KEY:-}" ]] && die "OPENAI_API_KEY required for openai-api transcription"
+    # Use dedicated transcription key, fall back to general OpenAI key
+    local api_key="${OPENAI_WHISPER_API_KEY:-${OPENAI_API_KEY:-}}"
+    [[ -z "$api_key" ]] && die "OPENAI_WHISPER_API_KEY or OPENAI_API_KEY required for openai-api transcription"
 
     # Check file size (25MB limit)
     local filesize
@@ -993,7 +1001,7 @@ transcribe_with_openai_api() {
 
     info "Transcribing via OpenAI API..."
     local curl_args=(-sf "https://api.openai.com/v1/audio/transcriptions"
-        -H "Authorization: Bearer $OPENAI_API_KEY"
+        -H "Authorization: Bearer $api_key"
         -F "file=@${audio}"
         -F "model=whisper-1"
         -F "response_format=srt")
@@ -1207,7 +1215,7 @@ ${BOLD}OPTIONS${NC}
     --force-embed             Force embed even if subtitles already present (adds new track)
     --force-translate         Force translation even if subtitles found
     --transcribe-provider <p> Transcription provider (whisper|openai-api)
-    --whisper-model <model>   Whisper model (tiny, base, small, medium, large)
+    --whisper-model <model>   Whisper model (tiny, base, small [default], medium, large)
     --no-transcribe           Disable transcription fallback in auto mode
     --force-transcribe        Force transcription (skip subtitle download in auto)
     --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
@@ -1324,7 +1332,13 @@ cmd_providers() {
     fi
     printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "whisper" "$WHISPER_MODEL" "Local Whisper (default, free)"
 
-    if [[ -n "${OPENAI_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
+    if [[ -n "${OPENAI_WHISPER_API_KEY:-}" ]]; then
+        status="${GREEN}OK${NC}"
+    elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        status="${GREEN}OK${NC} (via OPENAI_API_KEY)"
+    else
+        status="${RED}NO KEY${NC}"
+    fi
     printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "openai-api" "whisper-1" "OpenAI Whisper API"
 }
 
@@ -1425,7 +1439,7 @@ cmd_check() {
 
     # API keys
     printf "\n  ${BOLD}API Keys:${NC}\n"
-    for key_name in ZAI_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY MISTRAL_API_KEY GEMINI_API_KEY; do
+    for key_name in ZAI_API_KEY OPENAI_API_KEY OPENAI_WHISPER_API_KEY ANTHROPIC_API_KEY MISTRAL_API_KEY GEMINI_API_KEY; do
         local val="${!key_name:-}"
         if [[ -n "$val" ]]; then
             printf "  ${GREEN}OK${NC}  %-25s %s...%s\n" "$key_name" "${val:0:4}" "${val: -4}"

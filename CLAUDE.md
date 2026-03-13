@@ -33,8 +33,8 @@ Google provider does its own chunking internally. LLM providers use `chunk_srt()
 
 ### Transcription Providers
 
-- `whisper` (default) — local, uses `openai-whisper` CLI (or `uvx openai-whisper`), no API key. Model configurable via `WHISPER_MODEL` (default: `medium`).
-- `openai-api` — cloud, uses OpenAI Whisper API (`/v1/audio/transcriptions`), requires `OPENAI_API_KEY`. 25MB file limit.
+- `whisper` (default) — local, uses `openai-whisper` CLI (or `uvx openai-whisper`), no API key. Model configurable via `WHISPER_MODEL` (default: `small`).
+- `openai-api` — cloud, uses OpenAI Whisper API (`/v1/audio/transcriptions`), requires `OPENAI_WHISPER_API_KEY` (falls back to `OPENAI_API_KEY`). 25MB file limit.
 
 ### Smart Query Parsing
 
@@ -90,7 +90,7 @@ Generate subtitles from video audio via speech-to-text. Providers: `whisper` (de
 - URL encoding: `urlencode()` via jq
 - Default source: `opensubtitles-org` (podnapisi available via `--sources`)
 - Dependencies: `jq`, `curl`, `translate-shell` (required), `ffmpeg`/`ffprobe` (optional), `ffsubsync` via `uvx` (optional), `whisper` via `uvx` (optional, transcription)
-- Config keys: `DEFAULT_TRANSCRIBE_PROVIDER`, `WHISPER_MODEL`
+- Config keys: `DEFAULT_TRANSCRIBE_PROVIDER`, `WHISPER_MODEL`, `OPENAI_WHISPER_API_KEY`
 
 ## GitHub
 

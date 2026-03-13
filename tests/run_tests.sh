@@ -1376,10 +1376,15 @@ if echo "$config_content" | grep -q "WHISPER_MODEL"; then
 else
     assert "config template: has WHISPER_MODEL" 1
 fi
+if echo "$config_content" | grep -q "OPENAI_WHISPER_API_KEY"; then
+    assert "config template: has OPENAI_WHISPER_API_KEY" 0
+else
+    assert "config template: has OPENAI_WHISPER_API_KEY" 1
+fi
 
 # providers output: check transcription section details
 out=$("$SUBSYNC" providers 2>&1)
-assert_output_contains "providers: whisper shows model" "$out" "medium"
+assert_output_contains "providers: whisper shows model" "$out" "small"
 assert_output_contains "providers: openai-api shows whisper-1" "$out" "whisper-1"
 assert_output_contains "providers: whisper description" "$out" "Local Whisper"
 assert_output_contains "providers: openai-api description" "$out" "OpenAI Whisper API"

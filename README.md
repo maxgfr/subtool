@@ -218,7 +218,8 @@ ZAI_API_KEY="..."
 
 # Transcription settings
 DEFAULT_TRANSCRIBE_PROVIDER=""   # whisper (default) or openai-api
-WHISPER_MODEL=""                 # tiny, base, small, medium (default), large
+WHISPER_MODEL=""                 # tiny, base, small (default), medium, large
+OPENAI_WHISPER_API_KEY=""        # separate key for transcription (falls back to OPENAI_API_KEY)
 ```
 
 ## Smart Query Parsing
