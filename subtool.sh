@@ -2434,19 +2434,16 @@ _auto_sync() {
     fi
 
     info "Sync: $(basename "$sub") with $(basename "$video") (this may take a few minutes)"
-    local sync_output
-    if sync_output=$($ffsubsync_cmd "$sync_ref" -i "$sub" -o "$synced" "${ref_stream_args[@]}" 2>&1); then
-        debug "ffsubsync output: $sync_output" || true
+    # Run ffsubsync with output flowing to stderr so user sees progress
+    if $ffsubsync_cmd "$sync_ref" -i "$sub" -o "$synced" "${ref_stream_args[@]}" >&2 2>&1; then
         if [[ -s "$synced" ]]; then
             mv "$synced" "$sub"
             log "Sync OK: $(basename "$sub")"
         else
             warn "Sync produced empty file — keeping original"
-            debug "ffsubsync output: $sync_output" || true
         fi
     else
         warn "Sync failed — keeping unsynced version"
-        warn "ffsubsync error: $(echo "$sync_output" | tail -3)"
         rm -f "$synced"
     fi
     # Clean up extracted reference subtitle
@@ -2650,6 +2647,9 @@ cmd_transcribe() {
     local final_output="${OUTPUT_DIR}/${base_name}.${detected_lang}.srt"
     mv "$output_srt" "$final_output"
     log "Transcription saved: $final_output"
+
+    # Auto-sync with video (ffsubsync)
+    _auto_sync "$FILE_PATH" "$final_output" "$detected_lang"
 }
 
 # ── Command: info (SRT file stats) ───────────────────────────────────────────
@@ -3303,7 +3303,7 @@ cmd_autosync() {
     ffsubsync_args+=(-i "$FILE_PATH")
     ffsubsync_args+=(-o "$output")
 
-    if $ffsubsync_cmd "${ffsubsync_args[@]}" 2>&1; then
+    if $ffsubsync_cmd "${ffsubsync_args[@]}" >&2; then
         log "Auto sync: $output"
     else
         err "ffsubsync failed"
