@@ -622,8 +622,98 @@ chunk_srt() {
     echo "$chunk_num"
 }
 
+# Extract text from SRT for LLM translation (text-only, no timestamps)
+# Saves timestamp structure to structure_file, numbered text to text_file
+# Returns block count via stdout
+_srt_extract_for_translation() {
+    local input="$1" structure_file="$2" text_file="$3"
+    : > "$structure_file"
+    : > "$text_file"
+
+    local in_text=false timestamp="" text_buf="" block_num=0
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+
+        if [[ "$line" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}\ --\>\ [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} ]]; then
+            timestamp="$line"
+            in_text=true
+            text_buf=""
+        elif $in_text && [[ -z "$line" || "$line" =~ ^[[:space:]]*$ ]]; then
+            if [[ -n "$text_buf" ]]; then
+                ((block_num++)) || true
+                echo "$timestamp" >> "$structure_file"
+                echo "${block_num}: ${text_buf}" >> "$text_file"
+            fi
+            in_text=false
+            text_buf=""
+        elif $in_text && ! [[ "$line" =~ ^[0-9]+[[:space:]]*$ ]]; then
+            if [[ -n "$text_buf" ]]; then
+                text_buf="${text_buf} <br> ${line}"
+            else
+                text_buf="$line"
+            fi
+        fi
+    done < "$input"
+
+    # Handle last block (no trailing newline)
+    if $in_text && [[ -n "$text_buf" ]]; then
+        ((block_num++)) || true
+        echo "$timestamp" >> "$structure_file"
+        echo "${block_num}: ${text_buf}" >> "$text_file"
+    fi
+
+    echo "$block_num"
+}
+
+# Rebuild SRT from timestamp structure + translated text lines
+_srt_rebuild_from_translation() {
+    local structure_file="$1" translated_file="$2" output="$3"
+    : > "$output"
+
+    # Read timestamps
+    local -a timestamps=()
+    while IFS= read -r ts; do
+        timestamps+=("$ts")
+    done < "$structure_file"
+
+    # Read translated lines, strip number prefix, rebuild SRT
+    local idx=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        # Skip empty lines and markdown fences
+        [[ -z "$line" || "$line" =~ ^\`\`\` ]] && continue
+        # Strip "N: " prefix if present
+        local text="$line"
+        if [[ "$text" =~ ^[0-9]+:[[:space:]](.+)$ ]]; then
+            text="${BASH_REMATCH[1]}"
+        fi
+
+        if [[ $idx -lt ${#timestamps[@]} ]]; then
+            printf '%d\n%s\n' "$((idx+1))" "${timestamps[$idx]}" >> "$output"
+            # Restore <br> markers to actual newlines
+            echo "$text" | sed 's/ <br> /\n/g' >> "$output"
+            printf '\n' >> "$output"
+        fi
+        ((idx++)) || true
+    done < "$translated_file"
+
+    if [[ $idx -lt ${#timestamps[@]} ]]; then
+        warn "Translation returned $idx/$((${#timestamps[@]})) blocks — some subtitles may be missing"
+    fi
+    debug "SRT rebuild: $idx/${#timestamps[@]} blocks" || true
+}
+
 _translate_prompt() {
-    echo "Translate this SRT subtitle file from $1 to $2. Keep ALL SRT formatting intact (numbers, timestamps, blank lines). Only translate the text lines. Output ONLY the translated SRT content, nothing else."
+    cat <<PROMPT
+Translate the following numbered subtitle lines from $1 to $2.
+Rules:
+- Keep the exact numbering format (N: translated text)
+- Preserve <br> markers exactly as-is (they are line break markers)
+- Translate ONLY the text after the number
+- Output one line per input line, nothing else
+- Do NOT add any explanation, markdown formatting, or code blocks
+PROMPT
 }
 
 translate_with_google() {
@@ -833,7 +923,7 @@ translate_with_claude() {
         -H "Content-Type: application/json" \
         -d "{
             \"model\": \"$model\",
-            \"max_tokens\": 8192,
+            \"max_tokens\": 16384,
             \"messages\": [
                 {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ]
@@ -1059,45 +1149,56 @@ transcribe_video() {
     return 1
 }
 
-# Main translation with chunking
+# Main translation
 translate_subtitle() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4" provider="$5"
 
     header "Translation ($provider)"
     info "Source: $src_lang -> Target: $target_lang"
 
-    # Google provider handles its own SRT parsing + batching — no chunking needed
+    # Google provider handles its own SRT parsing + batching
     if [[ "$provider" == "google" ]]; then
         _translate_dispatch "$input" "$output" "$src_lang" "$target_lang" "$provider"
     else
+        # LLM providers: extract text only (never send timestamps to LLM)
+        local structure_file="$CACHE_DIR/translate_structure_$$.txt"
+        local text_file="$CACHE_DIR/translate_text_$$.txt"
+        local text_translated="$CACHE_DIR/translate_text_out_$$.txt"
+
+        local block_count
+        block_count=$(_srt_extract_for_translation "$input" "$structure_file" "$text_file")
+        info "$block_count subtitle blocks to translate"
+
         local total_lines
-        total_lines=$(wc -l < "$input" | tr -d ' ')
-        if [[ $total_lines -le 300 ]]; then
-            _translate_dispatch "$input" "$output" "$src_lang" "$target_lang" "$provider"
+        total_lines=$(wc -l < "$text_file" | tr -d ' ')
+
+        if [[ $total_lines -le 800 ]]; then
+            # Single call — translate all text at once
+            _translate_dispatch "$text_file" "$text_translated" "$src_lang" "$target_lang" "$provider"
         else
-            info "Large file ($total_lines lines), splitting into chunks..."
-            local num_chunks
-            num_chunks=$(chunk_srt "$input" 150)
+            # Very large file — chunk text lines and translate in batches
+            info "Large file ($total_lines text lines), splitting into chunks..."
+            local chunk_size=500
+            local num_chunks=$(( (total_lines + chunk_size - 1) / chunk_size ))
             local max_parallel=3
             info "$num_chunks chunks to translate (max $max_parallel in parallel)"
 
-            : > "$output"
-
-            # Parallel translation in batches
+            : > "$text_translated"
             for ((batch_start=0; batch_start<num_chunks; batch_start+=max_parallel)); do
                 local pids=()
                 local batch_end=$((batch_start + max_parallel))
                 [[ $batch_end -gt $num_chunks ]] && batch_end=$num_chunks
 
                 for ((i=batch_start; i<batch_end; i++)); do
-                    local chunk_in="$CACHE_DIR/chunk_${i}.srt"
-                    local chunk_out="$CACHE_DIR/chunk_${i}_translated.srt"
-                    info "Chunk $((i+1))/$num_chunks (parallel)..."
+                    local start=$((i * chunk_size + 1))
+                    local chunk_in="$CACHE_DIR/text_chunk_${i}.txt"
+                    local chunk_out="$CACHE_DIR/text_chunk_${i}_out.txt"
+                    sed -n "${start},$((start + chunk_size - 1))p" "$text_file" > "$chunk_in"
+                    info "Chunk $((i+1))/$num_chunks..."
                     _translate_dispatch "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" "$provider" &
                     pids+=($!)
                 done
 
-                # Wait for batch to finish, track failures
                 local chunk_failures=0
                 for pid in "${pids[@]}"; do
                     wait "$pid" || ((chunk_failures++)) || true
@@ -1105,24 +1206,21 @@ translate_subtitle() {
                 [[ $chunk_failures -gt 0 ]] && warn "$chunk_failures chunk(s) failed in this batch"
             done
 
-            # Reassemble in order
-            local total_failures=0
+            # Reassemble translated text
             for ((i=0; i<num_chunks; i++)); do
-                local chunk_out="$CACHE_DIR/chunk_${i}_translated.srt"
-                if [[ -s "$chunk_out" ]]; then
-                    cat "$chunk_out" >> "$output"
-                else
-                    warn "Chunk $((i+1)) empty, skip"
-                    ((total_failures++)) || true
-                fi
-                rm -f "$CACHE_DIR/chunk_${i}.srt" "$chunk_out"
+                local chunk_out="$CACHE_DIR/text_chunk_${i}_out.txt"
+                [[ -s "$chunk_out" ]] && cat "$chunk_out" >> "$text_translated"
+                rm -f "$CACHE_DIR/text_chunk_${i}.txt" "$chunk_out"
             done
-            [[ $total_failures -gt 0 ]] && warn "Total: $total_failures/$num_chunks chunks failed"
         fi
+
+        # Rebuild SRT from original timestamps + translated text
+        _srt_rebuild_from_translation "$structure_file" "$text_translated" "$output"
+
+        rm -f "$structure_file" "$text_file" "$text_translated"
     fi
 
     if [[ -s "$output" ]]; then
-        # Validate that the output is still valid SRT
         if validate_srt "$output"; then
             log "Translation completed: $output"
         else
