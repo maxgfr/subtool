@@ -2806,6 +2806,29 @@ _lang_title() {
     esac
 }
 
+# Helper: detect language of an embedded subtitle stream by extracting a text sample
+# Usage: _detect_stream_lang video stream_index
+# Returns detected language code, or "und" if detection fails
+_detect_stream_lang() {
+    local video="$1" stream_idx="$2"
+    local tmp_sub="$CACHE_DIR/detect_lang_$$.srt"
+    if ffmpeg -v quiet -i "$video" -map "0:s:${stream_idx}" -c:s srt "$tmp_sub" -y 2>/dev/null && [[ -s "$tmp_sub" ]]; then
+        local sample
+        sample=$(grep -vE '^[0-9]+$|^$|^[0-9]{2}:' "$tmp_sub" | head -20 | tr '\n' ' ' || true)
+        rm -f "$tmp_sub"
+        if [[ -n "$sample" ]]; then
+            local detected
+            detected=$(detect_lang "$sample")
+            if [[ -n "$detected" && "$detected" != "und" ]]; then
+                echo "$detected"
+                return 0
+            fi
+        fi
+    fi
+    rm -f "$tmp_sub"
+    echo "und"
+}
+
 # Helper for auto-embed (embed srt into video, replace original)
 _auto_embed() {
     local video="$1" sub="$2" lang="$3"
@@ -2844,6 +2867,10 @@ _auto_embed() {
         local s_lang s_title
         s_lang=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.language // \"und\"")
         s_title=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.title // \"\"")
+        # Auto-detect language if undefined
+        if [[ "$s_lang" == "und" || -z "$s_lang" ]]; then
+            s_lang=$(_detect_stream_lang "$video" "$sidx")
+        fi
         [[ -z "$s_title" ]] && s_title=$(_lang_title "$s_lang")
         ffmpeg_cmd+=(-metadata:s:s:"$sidx" language="$s_lang" -metadata:s:s:"$sidx" title="$s_title")
     done
@@ -3404,10 +3431,21 @@ cmd_extract() {
         return 1
     fi
 
+    # Auto-detect language for streams tagged "und"
+    local detected_langs=()
+    for ((idx=0; idx<count; idx++)); do
+        local raw_lang
+        raw_lang=$(echo "$streams" | jq -r ".streams[$idx].tags.language // \"und\"")
+        if [[ "$raw_lang" == "und" || -z "$raw_lang" ]]; then
+            raw_lang=$(_detect_stream_lang "$FILE_PATH" "$idx")
+        fi
+        detected_langs+=("$raw_lang")
+    done
+
     info "$count subtitle track(s) found:"
     for ((idx=0; idx<count; idx++)); do
         local lang title codec
-        lang=$(echo "$streams" | jq -r ".streams[$idx].tags.language // \"und\"")
+        lang="${detected_langs[$idx]}"
         title=$(echo "$streams" | jq -r ".streams[$idx].tags.title // \"\"")
         codec=$(echo "$streams" | jq -r ".streams[$idx].codec_name // \"?\"")
         local display="$title"
@@ -3437,7 +3475,7 @@ cmd_extract() {
     local extracted=0
     for track in "${tracks[@]}"; do
         local lang codec ext
-        lang=$(echo "$streams" | jq -r ".streams[$track].tags.language // \"und\"")
+        lang="${detected_langs[$track]}"
         codec=$(echo "$streams" | jq -r ".streams[$track].codec_name // \"srt\"")
 
         case "$codec" in
@@ -3453,8 +3491,7 @@ cmd_extract() {
         # Detect duplicate languages to append track index for disambiguation
         local lang_count=0
         for ((j=0; j<count; j++)); do
-            local jlang
-            jlang=$(echo "$streams" | jq -r ".streams[$j].tags.language // \"und\"")
+            local jlang="${detected_langs[$j]}"
             [[ "$jlang" == "$lang" ]] && ((lang_count++)) || true
         done
 
@@ -3528,6 +3565,10 @@ cmd_embed() {
         local s_lang s_title
         s_lang=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.language // \"und\"")
         s_title=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.title // \"\"")
+        # Auto-detect language if undefined
+        if [[ "$s_lang" == "und" || -z "$s_lang" ]]; then
+            s_lang=$(_detect_stream_lang "$FILE_PATH" "$sidx")
+        fi
         [[ -z "$s_title" ]] && s_title=$(_lang_title "$s_lang")
         ffmpeg_cmd+=(-metadata:s:s:"$sidx" language="$s_lang" -metadata:s:s:"$sidx" title="$s_title")
     done

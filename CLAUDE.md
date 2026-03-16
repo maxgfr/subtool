@@ -85,6 +85,7 @@ Embed an SRT subtitle into a video file. Uses `-map 0 -map 1:0` to preserve all 
 - `transcribe_video()` — orchestrator: extract audio -> transcribe -> validate SRT
 - `_transcribe_dispatch()` — case dispatch for transcription providers (same pattern as `_translate_dispatch`)
 - `_lang_title()` — converts language code to human-readable title (e.g., `fr` → "French") for subtitle track metadata
+- `_detect_stream_lang()` — extracts a text sample from an embedded subtitle stream and auto-detects its language via `detect_lang()`. Used when stream has `language=und`
 
 ## CI/CD
 
@@ -110,6 +111,7 @@ When embedding subtitles with ffmpeg, **always**:
 1. Use `-map 0 -map 1:0` to copy ALL existing streams (never rely on ffmpeg's default stream selection)
 2. Set `-metadata:s:s:N language=XX` AND `-metadata:s:s:N title=XX` for EVERY subtitle stream (existing + new)
 3. Use `_lang_title()` as fallback when a stream has no title tag — otherwise players show generic "piste 1/2" labels
+   - When `language=und`, call `_detect_stream_lang()` first to auto-detect the real language from subtitle text content
 4. Target the correct stream index: count existing subtitle streams with `jq '.streams | length'` on ffprobe JSON output
 5. For MP4/M4V, use `mov_text` codec; for MKV, use `srt` — via `-c:s:"$sub_count" "$sub_codec"` (only the new stream)
 
