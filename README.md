@@ -173,6 +173,8 @@ subtool check
 | `--whisper-model <model>` | Whisper model size (`tiny`, `base`, `small`, `medium`, `large`) |
 | `--force-transcribe` | Force transcription in `auto` (skip subtitle download) |
 | `--no-transcribe` | Disable transcription fallback in `auto` mode |
+| `--chunk-size <n>` | Translation chunk size in lines (default: 80 google, 500 LLM) |
+| `--max-tokens <n>` | Max output tokens for LLM translation (default: auto per provider) |
 | `--verbose` | Show debug output |
 | `--quiet` | Suppress informational messages |
 
@@ -220,6 +222,10 @@ ZAI_API_KEY="..."
 DEFAULT_TRANSCRIBE_PROVIDER=""   # whisper (default) or openai-api
 WHISPER_MODEL=""                 # tiny, base, small (default), medium, large
 OPENAI_WHISPER_API_KEY=""        # separate key for transcription (falls back to OPENAI_API_KEY)
+
+# Translation tuning
+TRANSLATE_CHUNK_SIZE=""          # lines per chunk (default: 80 google, 500 LLM)
+MAX_TOKENS=""                    # max output tokens for LLM (default: auto per provider)
 ```
 
 ## Smart Query Parsing

@@ -38,6 +38,8 @@ QUIET=false
 SUBTITLE_URL=""
 TRANSCRIBE_PROVIDER="whisper"
 WHISPER_MODEL=""
+TRANSLATE_CHUNK_SIZE=""
+MAX_TOKENS=""
 NO_TRANSCRIBE=false
 FORCE_TRANSCRIBE=false
 
@@ -235,6 +237,12 @@ DEFAULT_TRANSCRIBE_PROVIDER=""
 
 # Whisper model (tiny, base, small, medium, large) — leave empty for "small"
 WHISPER_MODEL=""
+
+# Translation chunk size (lines per chunk) — leave empty for defaults (80 google, 500 LLM)
+TRANSLATE_CHUNK_SIZE=""
+
+# Max output tokens for LLM translation — leave empty for auto (based on provider/model)
+MAX_TOKENS=""
 CONF
         info "Config created: $CONFIG_FILE"
     fi
@@ -668,7 +676,7 @@ _srt_extract_for_translation() {
 
 # Rebuild SRT from timestamp structure + translated text lines
 _srt_rebuild_from_translation() {
-    local structure_file="$1" translated_file="$2" output="$3"
+    local structure_file="$1" translated_file="$2" output="$3" original_text="${4:-}"
     : > "$output"
 
     # Read timestamps
@@ -676,6 +684,25 @@ _srt_rebuild_from_translation() {
     while IFS= read -r ts; do
         timestamps+=("$ts")
     done < "$structure_file"
+
+    if [[ ${#timestamps[@]} -eq 0 ]]; then
+        warn "No timestamps found — cannot rebuild SRT"
+        return 1
+    fi
+
+    # Read original text lines (for fallback if translation is incomplete)
+    local -a orig_texts=()
+    if [[ -n "$original_text" && -f "$original_text" ]]; then
+        while IFS= read -r ol; do
+            ol="${ol%$'\r'}"
+            [[ -z "$ol" ]] && continue
+            local ot="$ol"
+            if [[ "$ot" =~ ^[0-9]+:[[:space:]](.+)$ ]]; then
+                ot="${BASH_REMATCH[1]}"
+            fi
+            orig_texts+=("$ot")
+        done < "$original_text"
+    fi
 
     # Read translated lines, strip number prefix, rebuild SRT
     local idx=0
@@ -698,10 +725,38 @@ _srt_rebuild_from_translation() {
         ((idx++)) || true
     done < "$translated_file"
 
+    # Fill missing blocks with original text (e.g. LLM truncated output)
     if [[ $idx -lt ${#timestamps[@]} ]]; then
-        warn "Translation returned $idx/$((${#timestamps[@]})) blocks — some subtitles may be missing"
+        warn "Translation returned $idx/$((${#timestamps[@]})) blocks — filling missing with original"
+        while [[ $idx -lt ${#timestamps[@]} ]]; do
+            local fallback_text=""
+            if [[ $idx -lt ${#orig_texts[@]} ]]; then
+                fallback_text="${orig_texts[$idx]}"
+            fi
+            printf '%d\n%s\n' "$((idx+1))" "${timestamps[$idx]}" >> "$output"
+            if [[ -n "$fallback_text" ]]; then
+                echo "$fallback_text" | sed 's/ <br> /\n/g' >> "$output"
+            fi
+            printf '\n' >> "$output"
+            ((idx++)) || true
+        done
     fi
     debug "SRT rebuild: $idx/${#timestamps[@]} blocks" || true
+}
+
+# Get max_tokens for a provider, respecting user override
+_max_tokens_for() {
+    local provider="$1"
+    # User override takes priority
+    [[ -n "${MAX_TOKENS:-}" ]] && { echo "$MAX_TOKENS"; return; }
+    # Sensible defaults per provider
+    case "$provider" in
+        claude)  echo 16384 ;;
+        openai)  echo 16384 ;;
+        mistral) echo 16384 ;;
+        gemini)  echo 65536 ;;
+        *)       echo 16384 ;;
+    esac
 }
 
 _translate_prompt() {
@@ -747,7 +802,7 @@ translate_with_google() {
     info "Google Translate: $total_text text lines to translate"
 
     # Step 2: Split text into chunks and translate in parallel
-    local chunk_size=80
+    local chunk_size="${TRANSLATE_CHUNK_SIZE:-80}"
     local num_chunks=$(( (total_text + chunk_size - 1) / chunk_size ))
     local max_parallel=8
     info "$num_chunks chunks (max $max_parallel in parallel)"
@@ -781,30 +836,47 @@ translate_with_google() {
         info "Translated: $((bend))/$num_chunks chunks"
     done
 
-    # Step 3: Reassemble translated text
-    local translated_file="$CACHE_DIR/trans_all_$$.txt"
-    : > "$translated_file"
+    # Step 3+4: Map translations back per-chunk
+    # (avoids line-count drift when trans adds/removes trailing blank lines)
+    local -a orig_line_nums=()
+    while IFS= read -r ln; do
+        orig_line_nums+=("$ln")
+    done < "$map_file"
+
+    local -A replacements=()
+    local map_idx=0
     for ((i=0; i<num_chunks; i++)); do
         local chunk_out="$CACHE_DIR/trans_chunk_${i}_out.txt"
-        if [[ -s "$chunk_out" ]]; then
-            cat "$chunk_out" >> "$translated_file"
-        else
-            # Fallback: keep original
-            cat "$CACHE_DIR/trans_chunk_${i}.txt" >> "$translated_file"
-        fi
-        rm -f "$CACHE_DIR/trans_chunk_${i}.txt" "$CACHE_DIR/trans_chunk_${i}_out.txt"
-    done
+        local chunk_in="$CACHE_DIR/trans_chunk_${i}.txt"
 
-    # Step 4: Replace text lines in original SRT with translations
-    # Build associative array: line_number -> translated_text
-    local -A replacements=()
-    local idx=0
-    while IFS= read -r ln; do
-        local trans_line=""
-        trans_line=$(sed -n "$((idx+1))p" "$translated_file")
-        replacements[$ln]="$trans_line"
-        ((idx++)) || true
-    done < "$map_file"
+        # Read original chunk lines
+        local -a orig_lines=()
+        while IFS= read -r ol; do
+            orig_lines+=("$ol")
+        done < "$chunk_in"
+
+        # Read translated chunk lines (if available)
+        local -a trans_lines=()
+        if [[ -s "$chunk_out" ]]; then
+            while IFS= read -r tl; do
+                trans_lines+=("$tl")
+            done < "$chunk_out"
+        fi
+
+        # Map each input line to its translation (or keep original if missing)
+        for ((j=0; j<${#orig_lines[@]}; j++)); do
+            if [[ $map_idx -lt ${#orig_line_nums[@]} ]]; then
+                if [[ $j -lt ${#trans_lines[@]} ]]; then
+                    replacements[${orig_line_nums[$map_idx]}]="${trans_lines[$j]}"
+                else
+                    replacements[${orig_line_nums[$map_idx]}]="${orig_lines[$j]}"
+                fi
+            fi
+            ((map_idx++)) || true
+        done
+
+        rm -f "$chunk_in" "$chunk_out"
+    done
 
     # Write output: copy original, replacing text lines
     local lineno=0
@@ -827,7 +899,7 @@ translate_with_google() {
     fi
 
     # Cleanup
-    rm -f "$text_file" "$map_file" "$translated_file"
+    rm -f "$text_file" "$map_file"
 }
 
 translate_with_claude_code() {
@@ -869,6 +941,7 @@ translate_with_zai_codeplan() {
         -H "Content-Type: application/json" \
         -d "{
             \"model\": \"$model\",
+            \"max_tokens\": $(_max_tokens_for zai-codeplan),
             \"messages\": [
                 {\"role\": \"system\", \"content\": \"You are a professional subtitle translator. Preserve all SRT formatting exactly.\"},
                 {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
@@ -876,7 +949,13 @@ translate_with_zai_codeplan() {
             \"temperature\": 0.3
         }") || { err "Z.ai API error"; return 1; }
 
-    echo "$resp" | jq -r '.choices[0].message.content' > "$output"
+    local content
+    content=$(echo "$resp" | jq -r '.choices[0].message.content')
+    if [[ -z "$content" || "$content" == "null" ]]; then
+        err "Z.ai returned empty/invalid response"
+        return 1
+    fi
+    echo "$content" > "$output"
 }
 
 translate_with_openai() {
@@ -897,6 +976,7 @@ translate_with_openai() {
         -H "Content-Type: application/json" \
         -d "{
             \"model\": \"$model\",
+            \"max_tokens\": $(_max_tokens_for openai),
             \"messages\": [
                 {\"role\": \"system\", \"content\": \"You are a professional subtitle translator. Preserve all SRT formatting exactly.\"},
                 {\"role\": \"user\", \"content\": $escaped_content}
@@ -904,7 +984,13 @@ translate_with_openai() {
             \"temperature\": 0.3
         }") || { err "OpenAI API error"; return 1; }
 
-    echo "$resp" | jq -r '.choices[0].message.content' > "$output"
+    local content
+    content=$(echo "$resp" | jq -r '.choices[0].message.content')
+    if [[ -z "$content" || "$content" == "null" ]]; then
+        err "OpenAI returned empty/invalid response"
+        return 1
+    fi
+    echo "$content" > "$output"
 }
 
 translate_with_claude() {
@@ -923,13 +1009,19 @@ translate_with_claude() {
         -H "Content-Type: application/json" \
         -d "{
             \"model\": \"$model\",
-            \"max_tokens\": 16384,
+            \"max_tokens\": $(_max_tokens_for claude),
             \"messages\": [
                 {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ]
         }") || { err "Claude API error"; return 1; }
 
-    echo "$resp" | jq -r '.content[0].text' > "$output"
+    local content
+    content=$(echo "$resp" | jq -r '.content[0].text')
+    if [[ -z "$content" || "$content" == "null" ]]; then
+        err "Claude API returned empty/invalid response"
+        return 1
+    fi
+    echo "$content" > "$output"
 }
 
 translate_with_mistral() {
@@ -947,13 +1039,20 @@ translate_with_mistral() {
         -H "Content-Type: application/json" \
         -d "{
             \"model\": \"$model\",
+            \"max_tokens\": $(_max_tokens_for mistral),
             \"messages\": [
                 {\"role\": \"user\", \"content\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}
             ],
             \"temperature\": 0.3
         }") || { err "Mistral API error"; return 1; }
 
-    echo "$resp" | jq -r '.choices[0].message.content' > "$output"
+    local content
+    content=$(echo "$resp" | jq -r '.choices[0].message.content')
+    if [[ -z "$content" || "$content" == "null" ]]; then
+        err "Mistral returned empty/invalid response"
+        return 1
+    fi
+    echo "$content" > "$output"
 }
 
 translate_with_gemini() {
@@ -972,10 +1071,16 @@ translate_with_gemini() {
             \"contents\": [{
                 \"parts\": [{\"text\": $(printf '%s\n\n%s' "$prompt" "$(cat "$input")" | jq -sR .)}]
             }],
-            \"generationConfig\": {\"temperature\": 0.3}
+            \"generationConfig\": {\"temperature\": 0.3, \"maxOutputTokens\": $(_max_tokens_for gemini)}
         }") || { err "Gemini API error"; return 1; }
 
-    echo "$resp" | jq -r '.candidates[0].content.parts[0].text' > "$output"
+    local content
+    content=$(echo "$resp" | jq -r '.candidates[0].content.parts[0].text')
+    if [[ -z "$content" || "$content" == "null" ]]; then
+        err "Gemini returned empty/invalid response"
+        return 1
+    fi
+    echo "$content" > "$output"
 }
 
 # Dispatch translation to the selected provider
@@ -1083,7 +1188,7 @@ transcribe_with_openai_api() {
 
     # Check file size (25MB limit)
     local filesize
-    filesize=$(stat -f%z "$audio" 2>/dev/null || stat -c%s "$audio" 2>/dev/null)
+    filesize=$(stat -f%z "$audio" 2>/dev/null || stat -c%s "$audio" 2>/dev/null || echo "0")
     if [[ "$filesize" -gt 26214400 ]]; then
         err "Audio file too large for OpenAI API (${filesize} bytes, max 25MB)"
         return 1
@@ -1175,10 +1280,31 @@ translate_subtitle() {
         if [[ $total_lines -le 800 ]]; then
             # Single call — translate all text at once
             _translate_dispatch "$text_file" "$text_translated" "$src_lang" "$target_lang" "$provider"
+
+            # If LLM truncated output, retry the missing portion
+            if [[ -s "$text_translated" ]]; then
+                local translated_count
+                translated_count=$(grep -cvE '^[[:space:]]*$|^\`\`\`' "$text_translated" 2>/dev/null || echo "0")
+                if [[ $translated_count -gt 0 && $translated_count -lt $block_count ]]; then
+                    warn "LLM returned $translated_count/$block_count blocks — retrying missing portion"
+                    local remaining_file="$CACHE_DIR/translate_remaining_$$.txt"
+                    local remaining_out="$CACHE_DIR/translate_remaining_out_$$.txt"
+                    sed -n "$((translated_count + 1)),\$p" "$text_file" > "$remaining_file"
+                    if _translate_dispatch "$remaining_file" "$remaining_out" "$src_lang" "$target_lang" "$provider" 2>/dev/null && [[ -s "$remaining_out" ]]; then
+                        cat "$remaining_out" >> "$text_translated"
+                        local retry_count
+                        retry_count=$(grep -cvE '^[[:space:]]*$|^\`\`\`' "$remaining_out" 2>/dev/null || echo "0")
+                        info "Retry OK: recovered $retry_count blocks"
+                    else
+                        warn "Retry failed — missing blocks will use original text"
+                    fi
+                    rm -f "$remaining_file" "$remaining_out"
+                fi
+            fi
         else
             # Very large file — chunk text lines and translate in batches
             info "Large file ($total_lines text lines), splitting into chunks..."
-            local chunk_size=500
+            local chunk_size="${TRANSLATE_CHUNK_SIZE:-500}"
             local num_chunks=$(( (total_lines + chunk_size - 1) / chunk_size ))
             local max_parallel=3
             info "$num_chunks chunks to translate (max $max_parallel in parallel)"
@@ -1206,16 +1332,28 @@ translate_subtitle() {
                 [[ $chunk_failures -gt 0 ]] && warn "$chunk_failures chunk(s) failed in this batch"
             done
 
-            # Reassemble translated text
+            # Reassemble translated text (retry failed chunks once before fallback)
             for ((i=0; i<num_chunks; i++)); do
                 local chunk_out="$CACHE_DIR/text_chunk_${i}_out.txt"
-                [[ -s "$chunk_out" ]] && cat "$chunk_out" >> "$text_translated"
-                rm -f "$CACHE_DIR/text_chunk_${i}.txt" "$chunk_out"
+                local chunk_in="$CACHE_DIR/text_chunk_${i}.txt"
+                if [[ -s "$chunk_out" ]]; then
+                    cat "$chunk_out" >> "$text_translated"
+                elif [[ -s "$chunk_in" ]]; then
+                    warn "Chunk $((i+1)) failed — retrying..."
+                    if _translate_dispatch "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" "$provider" 2>/dev/null && [[ -s "$chunk_out" ]]; then
+                        cat "$chunk_out" >> "$text_translated"
+                        info "Chunk $((i+1)) retry OK"
+                    else
+                        warn "Chunk $((i+1)) retry failed — keeping original text"
+                        cat "$chunk_in" >> "$text_translated"
+                    fi
+                fi
+                rm -f "$chunk_in" "$chunk_out"
             done
         fi
 
         # Rebuild SRT from original timestamps + translated text
-        _srt_rebuild_from_translation "$structure_file" "$text_translated" "$output"
+        _srt_rebuild_from_translation "$structure_file" "$text_translated" "$output" "$text_file"
 
         rm -f "$structure_file" "$text_file" "$text_translated"
     fi
@@ -1314,6 +1452,8 @@ ${BOLD}OPTIONS${NC}
     --force-translate         Force translation even if subtitles found
     --transcribe-provider <p> Transcription provider (whisper|openai-api)
     --whisper-model <model>   Whisper model (tiny, base, small [default], medium, large)
+    --chunk-size <n>          Translation chunk size in lines (default: 80 google, 500 LLM)
+    --max-tokens <n>          Max output tokens for LLM translation (default: auto per provider)
     --no-transcribe           Disable transcription fallback in auto mode
     --force-transcribe        Force transcription (skip subtitle download in auto)
     --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
@@ -2758,7 +2898,7 @@ cmd_info() {
     header "Info: $(basename "$FILE_PATH")"
 
     local filesize line_count sub_count
-    filesize=$(stat -f%z "$FILE_PATH" 2>/dev/null || stat -c%s "$FILE_PATH" 2>/dev/null)
+    filesize=$(stat -f%z "$FILE_PATH" 2>/dev/null || stat -c%s "$FILE_PATH" 2>/dev/null || echo "0")
     local encoding
     encoding=$(file --mime-encoding "$FILE_PATH" 2>/dev/null | awk -F': ' '{print $2}' || echo "unknown")
     line_count=$(wc -l < "$FILE_PATH" | tr -d ' ')
@@ -3456,6 +3596,8 @@ parse_args() {
             --force-translate) FORCE_TRANSLATE=true; shift ;;
             --transcribe-provider) TRANSCRIBE_PROVIDER="$2"; shift 2 ;;
             --whisper-model) WHISPER_MODEL="$2"; shift 2 ;;
+            --chunk-size) TRANSLATE_CHUNK_SIZE="$2"; shift 2 ;;
+            --max-tokens) MAX_TOKENS="$2"; shift 2 ;;
             --no-transcribe) NO_TRANSCRIBE=true; shift ;;
             --force-transcribe) FORCE_TRANSCRIBE=true; shift ;;
             --keep-files)  KEEP_FILES=true; shift ;;

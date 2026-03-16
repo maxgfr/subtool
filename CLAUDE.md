@@ -29,7 +29,7 @@ Search flow: `search_all_sources()` → iterates `SOURCES` (comma-separated) →
 - `zai-codeplan` — Z.ai Coding Plan API
 - `openai`, `claude`, `mistral`, `gemini` — standard chat APIs
 
-Google provider does its own chunking internally. LLM providers use `chunk_srt()` (250 lines/chunk).
+Google provider does its own chunking internally (default 80 lines/chunk). LLM providers use text-only extraction + chunking (default 500 lines/chunk). Chunk size configurable via `--chunk-size` or `TRANSLATE_CHUNK_SIZE`. Max output tokens configurable via `--max-tokens` or `MAX_TOKENS` (auto per provider by default via `_max_tokens_for()`). Translation includes retry logic: truncated LLM output auto-retries missing portion, failed chunks retry once before falling back to original text.
 
 ### Transcription Providers
 
@@ -70,6 +70,9 @@ Generate subtitles from video audio via speech-to-text. Providers: `whisper` (de
 - `detect_lang()` — auto-detect language from subtitle text sample
 - `validate_srt()` — check SRT format validity (indices, timestamps, text)
 - `_translate_prompt()` / `_translate_dispatch()` — shared translation logic (deduplicated)
+- `_srt_extract_for_translation()` — extract text-only from SRT (numbered lines + timestamp structure)
+- `_srt_rebuild_from_translation()` — rebuild SRT from timestamps + translated text (with original fallback)
+- `_max_tokens_for()` — returns provider-specific max_tokens default (respects `MAX_TOKENS` override)
 - `_multi_lang_dispatch()` — handles comma-separated `-l en,fr` by looping over each language
 - `transcribe_video()` — orchestrator: extract audio -> transcribe -> validate SRT
 - `_transcribe_dispatch()` — case dispatch for transcription providers (same pattern as `_translate_dispatch`)
@@ -90,7 +93,7 @@ Generate subtitles from video audio via speech-to-text. Providers: `whisper` (de
 - URL encoding: `urlencode()` via jq
 - Default source: `opensubtitles-org` (podnapisi available via `--sources`)
 - Dependencies: `jq`, `curl`, `translate-shell` (required), `ffmpeg`/`ffprobe` (optional), `ffsubsync` via `uvx` (optional), `whisper` via `uvx` (optional, transcription)
-- Config keys: `DEFAULT_TRANSCRIBE_PROVIDER`, `WHISPER_MODEL`, `OPENAI_WHISPER_API_KEY`
+- Config keys: `DEFAULT_TRANSCRIBE_PROVIDER`, `WHISPER_MODEL`, `OPENAI_WHISPER_API_KEY`, `TRANSLATE_CHUNK_SIZE`, `MAX_TOKENS`
 
 ## GitHub
 

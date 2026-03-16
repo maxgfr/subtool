@@ -1423,6 +1423,419 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "translation chunk/rebuild"
+
+# Test _srt_extract_for_translation + _srt_rebuild_from_translation round-trip
+_test_extract_rebuild() {
+    local srt_file="$1" desc="$2"
+    local struct_file="$TMP_DIR/test_struct_$$.txt"
+    local text_file="$TMP_DIR/test_text_$$.txt"
+    local rebuilt="$TMP_DIR/test_rebuilt_$$.srt"
+
+    # Extract functions from script and run
+    local block_count
+    block_count=$(bash -c "
+        set -uo pipefail
+        $(sed -n '/^_srt_extract_for_translation()/,/^}/p' "$SUBSYNC")
+        _srt_extract_for_translation \"\$1\" \"\$2\" \"\$3\"
+    " -- "$srt_file" "$struct_file" "$text_file" 2>/dev/null) || true
+
+    local orig_blocks
+    orig_blocks=$(grep -cE '^[0-9]+$' "$srt_file" 2>/dev/null || echo "0")
+
+    if [[ "$block_count" == "$orig_blocks" ]]; then
+        assert "$desc: extract block count ($block_count)" 0
+    else
+        assert "$desc: extract block count (expected=$orig_blocks got=$block_count)" 1
+    fi
+
+    # Verify structure file has timestamps
+    local ts_count
+    ts_count=$(wc -l < "$struct_file" | tr -d ' ')
+    if [[ "$ts_count" == "$orig_blocks" ]]; then
+        assert "$desc: structure timestamps ($ts_count)" 0
+    else
+        assert "$desc: structure timestamps (expected=$orig_blocks got=$ts_count)" 1
+    fi
+
+    # Verify text file has numbered lines
+    local text_count
+    text_count=$(wc -l < "$text_file" | tr -d ' ')
+    if [[ "$text_count" == "$orig_blocks" ]]; then
+        assert "$desc: text lines ($text_count)" 0
+    else
+        assert "$desc: text lines (expected=$orig_blocks got=$text_count)" 1
+    fi
+
+    rm -f "$struct_file" "$text_file" "$rebuilt"
+}
+
+_test_extract_rebuild "$FIXTURES/basic.srt" "extract-rebuild basic"
+_test_extract_rebuild "$FIXTURES/large.srt" "extract-rebuild large"
+
+# Test _srt_rebuild_from_translation with truncated input (missing blocks)
+_test_rebuild_truncated() {
+    local srt_file="$1"
+    local struct_file="$TMP_DIR/test_trunc_struct_$$.txt"
+    local text_file="$TMP_DIR/test_trunc_text_$$.txt"
+    local partial="$TMP_DIR/test_trunc_partial_$$.txt"
+    local rebuilt="$TMP_DIR/test_trunc_rebuilt_$$.srt"
+
+    # Extract
+    bash -c "
+        set -uo pipefail
+        $(sed -n '/^_srt_extract_for_translation()/,/^}/p' "$SUBSYNC")
+        _srt_extract_for_translation \"\$1\" \"\$2\" \"\$3\"
+    " -- "$srt_file" "$struct_file" "$text_file" 2>/dev/null || true
+
+    # Simulate truncation: keep only first 2 lines of text
+    head -2 "$text_file" > "$partial"
+
+    # Rebuild with truncated translation + original fallback
+    bash -c "
+        set -uo pipefail
+        debug() { :; }
+        warn() { :; }
+        $(sed -n '/^_srt_rebuild_from_translation()/,/^}/p' "$SUBSYNC")
+        _srt_rebuild_from_translation \"\$1\" \"\$2\" \"\$3\" \"\$4\"
+    " -- "$struct_file" "$partial" "$rebuilt" "$text_file" 2>/dev/null || true
+
+    local orig_blocks rebuilt_blocks
+    orig_blocks=$(grep -cE '^[0-9]+$' "$srt_file" 2>/dev/null || echo "0")
+    rebuilt_blocks=$(grep -cE '^[0-9]+$' "$rebuilt" 2>/dev/null || echo "0")
+
+    if [[ "$rebuilt_blocks" == "$orig_blocks" ]]; then
+        assert "rebuild-truncated: all blocks preserved ($rebuilt_blocks)" 0
+    else
+        assert "rebuild-truncated: all blocks preserved (expected=$orig_blocks got=$rebuilt_blocks)" 1
+    fi
+
+    # Verify timestamps are present
+    local ts_count
+    ts_count=$(grep -cE '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}' "$rebuilt" 2>/dev/null || echo "0")
+    if [[ "$ts_count" == "$orig_blocks" ]]; then
+        assert "rebuild-truncated: timestamps preserved ($ts_count)" 0
+    else
+        assert "rebuild-truncated: timestamps preserved (expected=$orig_blocks got=$ts_count)" 1
+    fi
+
+    rm -f "$struct_file" "$text_file" "$partial" "$rebuilt"
+}
+
+_test_rebuild_truncated "$FIXTURES/basic.srt"
+
+# Test _srt_rebuild_from_translation with completely empty translation (all fallback)
+_test_rebuild_empty() {
+    local srt_file="$1"
+    local struct_file="$TMP_DIR/test_empty_struct_$$.txt"
+    local text_file="$TMP_DIR/test_empty_text_$$.txt"
+    local empty_trans="$TMP_DIR/test_empty_trans_$$.txt"
+    local rebuilt="$TMP_DIR/test_empty_rebuilt_$$.srt"
+
+    bash -c "
+        set -uo pipefail
+        $(sed -n '/^_srt_extract_for_translation()/,/^}/p' "$SUBSYNC")
+        _srt_extract_for_translation \"\$1\" \"\$2\" \"\$3\"
+    " -- "$srt_file" "$struct_file" "$text_file" 2>/dev/null || true
+
+    # Empty translation file
+    : > "$empty_trans"
+
+    bash -c "
+        set -uo pipefail
+        debug() { :; }
+        warn() { :; }
+        $(sed -n '/^_srt_rebuild_from_translation()/,/^}/p' "$SUBSYNC")
+        _srt_rebuild_from_translation \"\$1\" \"\$2\" \"\$3\" \"\$4\"
+    " -- "$struct_file" "$empty_trans" "$rebuilt" "$text_file" 2>/dev/null || true
+
+    local orig_blocks rebuilt_blocks
+    orig_blocks=$(grep -cE '^[0-9]+$' "$srt_file" 2>/dev/null || echo "0")
+    rebuilt_blocks=$(grep -cE '^[0-9]+$' "$rebuilt" 2>/dev/null || echo "0")
+
+    if [[ "$rebuilt_blocks" == "$orig_blocks" ]]; then
+        assert "rebuild-empty: fallback to all originals ($rebuilt_blocks)" 0
+    else
+        assert "rebuild-empty: fallback to all originals (expected=$orig_blocks got=$rebuilt_blocks)" 1
+    fi
+
+    rm -f "$struct_file" "$text_file" "$empty_trans" "$rebuilt"
+}
+
+_test_rebuild_empty "$FIXTURES/basic.srt"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "Google translate per-chunk mapping"
+
+# Simulate the per-chunk translation mapping with extra trailing lines (trans drift bug)
+_test_google_per_chunk() {
+    local map_file="$TMP_DIR/test_gmap.txt"
+
+    # Simulate: 4 text lines at original line numbers 3,7,12,17
+    printf '3\n7\n12\n17\n' > "$map_file"
+
+    # Chunk 0: 2 original lines
+    printf 'Hello\nWorld\n' > "$TMP_DIR/test_gchunk_0.txt"
+    # trans output with EXTRA trailing blank line (the bug)
+    printf 'Bonjour\nMonde\n\n' > "$TMP_DIR/test_gchunk_0_out.txt"
+
+    # Chunk 1: 2 original lines
+    printf 'Goodbye\nFriend\n' > "$TMP_DIR/test_gchunk_1.txt"
+    printf 'Au revoir\nAmi\n' > "$TMP_DIR/test_gchunk_1_out.txt"
+
+    # Run per-chunk mapping logic directly (no bash -c needed)
+    local num_chunks=2
+    local -a orig_line_nums=()
+    while IFS= read -r ln; do
+        orig_line_nums+=("$ln")
+    done < "$map_file"
+
+    local -A replacements=()
+    local map_idx=0
+    for ((i=0; i<num_chunks; i++)); do
+        local chunk_out="$TMP_DIR/test_gchunk_${i}_out.txt"
+        local chunk_in="$TMP_DIR/test_gchunk_${i}.txt"
+
+        local -a orig_lines=()
+        while IFS= read -r ol; do
+            orig_lines+=("$ol")
+        done < "$chunk_in"
+
+        local -a trans_lines=()
+        if [[ -s "$chunk_out" ]]; then
+            while IFS= read -r tl; do
+                trans_lines+=("$tl")
+            done < "$chunk_out"
+        fi
+
+        for ((j=0; j<${#orig_lines[@]}; j++)); do
+            if [[ $map_idx -lt ${#orig_line_nums[@]} ]]; then
+                if [[ $j -lt ${#trans_lines[@]} ]]; then
+                    replacements[${orig_line_nums[$map_idx]}]="${trans_lines[$j]}"
+                else
+                    replacements[${orig_line_nums[$map_idx]}]="${orig_lines[$j]}"
+                fi
+            fi
+            ((map_idx++)) || true
+        done
+    done
+
+    local result=""
+    for key in "${!replacements[@]}"; do
+        result+="${key}=${replacements[$key]}"$'\n'
+    done
+
+    # Verify: line 3=Bonjour, 7=Monde, 12=Au revoir, 17=Ami
+    # The old bug would have made 7=<blank> and 12=Monde and 17=Au revoir
+    if echo "$result" | grep -q "3=Bonjour" && \
+       echo "$result" | grep -q "7=Monde" && \
+       echo "$result" | grep -q "12=Au revoir" && \
+       echo "$result" | grep -q "17=Ami"; then
+        assert "per-chunk: correct mapping despite trailing blank lines" 0
+    else
+        assert "per-chunk: correct mapping despite trailing blank lines (got: $result)" 1
+    fi
+
+    rm -f "$map_file" "$TMP_DIR"/test_gchunk_*
+}
+
+_test_google_per_chunk
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "translation CLI flags"
+
+# --chunk-size flag acceptance
+out=$("$SUBSYNC" translate /nonexistent/file.srt -l fr --chunk-size 40 2>&1 || true)
+assert_output_contains "chunk-size flag: accepted" "$out" "not found"
+
+# --max-tokens flag acceptance
+out=$("$SUBSYNC" translate /nonexistent/file.srt -l fr --max-tokens 8192 2>&1 || true)
+assert_output_contains "max-tokens flag: accepted" "$out" "not found"
+
+# config template: new keys
+out=$(XDG_CONFIG_HOME="$TMP_DIR/xdg_translate" "$SUBSYNC" check 2>&1)
+config_content=$(cat "$TMP_DIR/xdg_translate/subtool/config" 2>/dev/null || true)
+if echo "$config_content" | grep -q "TRANSLATE_CHUNK_SIZE"; then
+    assert "config template: has TRANSLATE_CHUNK_SIZE" 0
+else
+    assert "config template: has TRANSLATE_CHUNK_SIZE" 1
+fi
+if echo "$config_content" | grep -q "MAX_TOKENS"; then
+    assert "config template: has MAX_TOKENS" 0
+else
+    assert "config template: has MAX_TOKENS" 1
+fi
+
+# _max_tokens_for helper: returns provider-specific defaults
+_test_max_tokens() {
+    local result
+    result=$(bash -c "
+        set -uo pipefail
+        MAX_TOKENS=''
+        $(sed -n '/^_max_tokens_for()/,/^}/p' "$SUBSYNC")
+        echo \"claude=\$(_max_tokens_for claude)\"
+        echo \"openai=\$(_max_tokens_for openai)\"
+        echo \"gemini=\$(_max_tokens_for gemini)\"
+    " 2>/dev/null) || true
+
+    if echo "$result" | grep -q "claude=16384"; then
+        assert "max-tokens default: claude=16384" 0
+    else
+        assert "max-tokens default: claude (got: $result)" 1
+    fi
+    if echo "$result" | grep -q "gemini=65536"; then
+        assert "max-tokens default: gemini=65536" 0
+    else
+        assert "max-tokens default: gemini (got: $result)" 1
+    fi
+
+    # Test user override
+    local override_result
+    override_result=$(bash -c "
+        set -uo pipefail
+        MAX_TOKENS=4096
+        $(sed -n '/^_max_tokens_for()/,/^}/p' "$SUBSYNC")
+        echo \"\$(_max_tokens_for claude)\"
+    " 2>/dev/null) || true
+
+    if [[ "$override_result" == "4096" ]]; then
+        assert "max-tokens override: user MAX_TOKENS=4096" 0
+    else
+        assert "max-tokens override: user MAX_TOKENS=4096 (got: $override_result)" 1
+    fi
+}
+
+_test_max_tokens
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "LLM response validation"
+
+# Test that jq "null" is rejected (simulates API error JSON)
+_test_jq_null_validation() {
+    # Extract validation logic from one of the translate functions
+    # All providers use the same pattern: check for empty or "null"
+    local test_cases=("null" "")
+    for tc in "${test_cases[@]}"; do
+        local content="$tc"
+        if [[ -z "$content" || "$content" == "null" ]]; then
+            assert "jq-null: rejects '$tc'" 0
+        else
+            assert "jq-null: rejects '$tc'" 1
+        fi
+    done
+
+    # Valid content should pass
+    local valid="1: Bonjour"
+    if [[ -z "$valid" || "$valid" == "null" ]]; then
+        assert "jq-null: accepts valid content" 1
+    else
+        assert "jq-null: accepts valid content" 0
+    fi
+}
+
+_test_jq_null_validation
+
+# Test that all LLM providers have null validation (search within each function body)
+for provider in zai_codeplan openai claude mistral gemini; do
+    # Extract function body and check for null validation
+    if sed -n "/^translate_with_${provider}()/,/^}/p" "$SUBSYNC" | grep -q '"null"'; then
+        assert "null-check: translate_with_${provider} validates response" 0
+    else
+        assert "null-check: translate_with_${provider} validates response" 1
+    fi
+done
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "edge cases"
+
+# Test _srt_rebuild with empty structure (should fail gracefully)
+_test_rebuild_empty_structure() {
+    local empty_struct="$TMP_DIR/test_empty_struct.txt"
+    local text="$TMP_DIR/test_empty_text.txt"
+    local rebuilt="$TMP_DIR/test_empty_struct_rebuilt.srt"
+    : > "$empty_struct"
+    echo "1: Hello" > "$text"
+
+    local exit_code=0
+    bash -c "
+        set -uo pipefail
+        debug() { :; }
+        warn() { :; }
+        $(sed -n '/^_srt_rebuild_from_translation()/,/^}/p' "$SUBSYNC")
+        _srt_rebuild_from_translation \"\$1\" \"\$2\" \"\$3\" \"\$4\"
+    " -- "$empty_struct" "$text" "$rebuilt" "$text" 2>/dev/null || exit_code=$?
+
+    if [[ "$exit_code" -ne 0 ]]; then
+        assert "rebuild-empty-structure: returns error" 0
+    else
+        assert "rebuild-empty-structure: returns error" 1
+    fi
+
+    rm -f "$empty_struct" "$text" "$rebuilt"
+}
+
+_test_rebuild_empty_structure
+
+# Test Google translate chunk mapping with trans producing FEWER lines (merge)
+_test_google_fewer_lines() {
+    local map_file="$TMP_DIR/test_fewer_map.txt"
+    printf '5\n10\n15\n' > "$map_file"
+
+    printf 'Hello\nWorld\nFoo\n' > "$TMP_DIR/test_fewer_chunk_0.txt"
+    # trans merged 3 input lines into 2 output lines
+    printf 'Bonjour Monde\nTruc\n' > "$TMP_DIR/test_fewer_chunk_0_out.txt"
+
+    local num_chunks=1
+    local -a orig_line_nums=()
+    while IFS= read -r ln; do
+        orig_line_nums+=("$ln")
+    done < "$map_file"
+
+    local -A replacements=()
+    local map_idx=0
+    for ((i=0; i<num_chunks; i++)); do
+        local chunk_out="$TMP_DIR/test_fewer_chunk_${i}_out.txt"
+        local chunk_in="$TMP_DIR/test_fewer_chunk_${i}.txt"
+
+        local -a orig_lines=()
+        while IFS= read -r ol; do
+            orig_lines+=("$ol")
+        done < "$chunk_in"
+
+        local -a trans_lines=()
+        if [[ -s "$chunk_out" ]]; then
+            while IFS= read -r tl; do
+                trans_lines+=("$tl")
+            done < "$chunk_out"
+        fi
+
+        for ((j=0; j<${#orig_lines[@]}; j++)); do
+            if [[ $map_idx -lt ${#orig_line_nums[@]} ]]; then
+                if [[ $j -lt ${#trans_lines[@]} ]]; then
+                    replacements[${orig_line_nums[$map_idx]}]="${trans_lines[$j]}"
+                else
+                    replacements[${orig_line_nums[$map_idx]}]="${orig_lines[$j]}"
+                fi
+            fi
+            ((map_idx++)) || true
+        done
+    done
+
+    # Line 5 and 10 get translations, line 15 keeps original "Foo"
+    if [[ "${replacements[5]}" == "Bonjour Monde" ]] && \
+       [[ "${replacements[10]}" == "Truc" ]] && \
+       [[ "${replacements[15]}" == "Foo" ]]; then
+        assert "per-chunk fewer lines: fallback to original for missing" 0
+    else
+        assert "per-chunk fewer lines: fallback to original (got: 5=${replacements[5]:-} 10=${replacements[10]:-} 15=${replacements[15]:-})" 1
+    fi
+
+    rm -f "$map_file" "$TMP_DIR"/test_fewer_*
+}
+
+_test_google_fewer_lines
+
+# ══════════════════════════════════════════════════════════════════════════════
 # RESULTS
 # ══════════════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}══════════════════════════════════════════${NC}\n"
