@@ -52,6 +52,14 @@ All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a fil
 
 Generate subtitles from video audio via speech-to-text. Providers: `whisper` (default, local) and `openai-api` (cloud). Language auto-detected from output. Auto-syncs with video via ffsubsync after transcription. Use `--from` to hint source language, `--whisper-model` to select model size (tiny/base/small/medium/large), `--transcribe-provider` to switch provider.
 
+### `extract` command
+
+Extract subtitle tracks from a video file (MKV, MP4, etc.). Supports `--track <num>` for a single track or `--all` to extract all tracks at once. Interactive prompt allows typing `all`. Output filenames use language code: `movie.fr.srt`. When multiple tracks share the same language, a track index is appended for disambiguation: `movie.en.0.srt`, `movie.en.1.srt`.
+
+### `embed` command
+
+Embed an SRT subtitle into a video file. Uses `-map 0 -map 1:0` to preserve all existing streams. Properly sets `language` and `title` metadata on the new subtitle stream AND re-sets metadata on all existing subtitle streams (prevents "piste 1/2" generic labels in players).
+
 ## CLI
 
 - Positional argument after command = file or directory (auto-detected). E.g., `subtool info movie.srt`, `subtool auto ~/Movies/`
@@ -76,6 +84,7 @@ Generate subtitles from video audio via speech-to-text. Providers: `whisper` (de
 - `_multi_lang_dispatch()` — handles comma-separated `-l en,fr` by looping over each language
 - `transcribe_video()` — orchestrator: extract audio -> transcribe -> validate SRT
 - `_transcribe_dispatch()` — case dispatch for transcription providers (same pattern as `_translate_dispatch`)
+- `_lang_title()` — converts language code to human-readable title (e.g., `fr` → "French") for subtitle track metadata
 
 ## CI/CD
 
@@ -94,6 +103,17 @@ Generate subtitles from video audio via speech-to-text. Providers: `whisper` (de
 - Default source: `opensubtitles-org` (podnapisi available via `--sources`)
 - Dependencies: `jq`, `curl`, `translate-shell` (required), `ffmpeg`/`ffprobe` (optional), `ffsubsync` via `uvx` (optional), `whisper` via `uvx` (optional, transcription)
 - Config keys: `DEFAULT_TRANSCRIBE_PROVIDER`, `WHISPER_MODEL`, `OPENAI_WHISPER_API_KEY`, `TRANSLATE_CHUNK_SIZE`, `MAX_TOKENS`
+
+### Embed/extract subtitle metadata (critical)
+
+When embedding subtitles with ffmpeg, **always**:
+1. Use `-map 0 -map 1:0` to copy ALL existing streams (never rely on ffmpeg's default stream selection)
+2. Set `-metadata:s:s:N language=XX` AND `-metadata:s:s:N title=XX` for EVERY subtitle stream (existing + new)
+3. Use `_lang_title()` as fallback when a stream has no title tag — otherwise players show generic "piste 1/2" labels
+4. Target the correct stream index: count existing subtitle streams with `jq '.streams | length'` on ffprobe JSON output
+5. For MP4/M4V, use `mov_text` codec; for MKV, use `srt` — via `-c:s:"$sub_count" "$sub_codec"` (only the new stream)
+
+Pattern used in both `cmd_embed()` and `_auto_embed()`: build an ffmpeg command array, loop over existing streams to add their metadata args, then add the new stream metadata.
 
 ## GitHub
 

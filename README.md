@@ -150,7 +150,9 @@ subtool merge primary.srt --merge-with secondary.srt
 subtool fix broken.srt
 
 # Extract subtitles from video
-subtool extract video.mkv --track 0
+subtool extract video.mkv                  # interactive track selection
+subtool extract video.mkv --all            # extract all subtitle tracks
+subtool extract video.mkv --track 2        # extract specific track
 
 # Embed subtitles into video
 subtool embed video.mkv --sub subs.srt -l fr
@@ -175,6 +177,8 @@ subtool check
 | `--no-transcribe` | Disable transcription fallback in `auto` mode |
 | `--chunk-size <n>` | Translation chunk size in lines (default: 80 google, 500 LLM) |
 | `--max-tokens <n>` | Max output tokens for LLM translation (default: auto per provider) |
+| `--all` | Extract all subtitle tracks at once (`extract` command) |
+| `--track <num>` | Extract a specific subtitle track (`extract` command) |
 | `--verbose` | Show debug output |
 | `--quiet` | Suppress informational messages |
 

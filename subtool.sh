@@ -1444,7 +1444,8 @@ ${BOLD}OPTIONS${NC}
     --ref <video|srt>         Reference for autosync (video or SRT)
     --ref-stream <stream>     Audio stream for autosync (e.g., a:1 for 2nd audio track). Auto-detected from -l
     --sub <file>              SRT file to embed in a video
-    --track <num>             Track to extract
+    --track <num>             Track to extract (single track)
+    --all                     Extract all subtitle tracks at once
     --url <url>               Download a subtitle from an opensubtitles.org URL
     --embed                   Embed subtitles in video (auto: active by default)
     --no-embed                Disable automatic embedding
@@ -1504,6 +1505,8 @@ ${BOLD}EXAMPLES${NC}
     $SCRIPT_NAME merge movie.de.srt --merge-with movie.fr.srt
     $SCRIPT_NAME fix broken.srt
     $SCRIPT_NAME extract movie.mkv
+    $SCRIPT_NAME extract movie.mkv --all
+    $SCRIPT_NAME extract movie.mkv --track 2
     $SCRIPT_NAME embed movie.mkv --sub movie.fr.srt -l fr
 
     # Transcribe (generate subtitles from audio)
@@ -2806,13 +2809,19 @@ _lang_title() {
 # Helper for auto-embed (embed srt into video, replace original)
 _auto_embed() {
     local video="$1" sub="$2" lang="$3"
+
+    # Get existing subtitle stream info
+    local streams_json
+    streams_json=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$video" 2>/dev/null)
+    local sub_count
+    sub_count=$(echo "$streams_json" | jq '.streams | length' 2>/dev/null || echo "0")
+
     # Skip if video already has a subtitle stream (unless --force-embed)
-    local existing_subs
-    existing_subs=$(ffprobe -v quiet -select_streams s -show_entries stream=index -of csv=p=0 "$video" 2>/dev/null || true)
-    if [[ -n "$existing_subs" ]] && ! $FORCE_EMBED; then
+    if [[ "$sub_count" -gt 0 ]] && ! $FORCE_EMBED; then
         info "Embed skip (subtitles already present): $(basename "$video")"
         return 0
     fi
+
     local vext="${video##*.}"
     local tmp_video="${video%.${vext}}.tmp.${vext}"
     # MP4/M4V need mov_text codec, MKV/others use srt
@@ -2821,18 +2830,29 @@ _auto_embed() {
         mp4|m4v|mov) sub_codec="mov_text" ;;
     esac
     info "Embed: $(basename "$sub") -> $(basename "$video") (codec: $sub_codec)"
-    # Count existing subtitle streams to set metadata on the correct index
-    local sub_count=0
-    if [[ -n "$existing_subs" ]]; then
-        sub_count=$(echo "$existing_subs" | wc -l | tr -d ' ')
-    fi
+
     local lang_title
     lang_title=$(_lang_title "$lang")
-    if ffmpeg -v quiet -i "$video" -i "$sub" \
-        -map 0 -map 1:0 -c copy -c:s:"$sub_count" "$sub_codec" \
-        -metadata:s:s:"$sub_count" language="$lang" \
-        -metadata:s:s:"$sub_count" title="$lang_title" \
-        "$tmp_video" -y 2>/dev/null && [[ -s "$tmp_video" ]]; then
+
+    # Build ffmpeg command with proper metadata for ALL subtitle streams
+    local ffmpeg_cmd=(ffmpeg -v quiet -i "$video" -i "$sub"
+        -map 0 -map 1:0 -c copy -c:s:"$sub_count" "$sub_codec")
+
+    # Preserve/fix metadata for existing subtitle streams (prevents "piste 1/2" labels)
+    local sidx
+    for ((sidx=0; sidx<sub_count; sidx++)); do
+        local s_lang s_title
+        s_lang=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.language // \"und\"")
+        s_title=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.title // \"\"")
+        [[ -z "$s_title" ]] && s_title=$(_lang_title "$s_lang")
+        ffmpeg_cmd+=(-metadata:s:s:"$sidx" language="$s_lang" -metadata:s:s:"$sidx" title="$s_title")
+    done
+
+    # Set metadata for the new subtitle stream
+    ffmpeg_cmd+=(-metadata:s:s:"$sub_count" language="$lang" -metadata:s:s:"$sub_count" title="$lang_title")
+    ffmpeg_cmd+=("$tmp_video" -y)
+
+    if "${ffmpeg_cmd[@]}" 2>/dev/null && [[ -s "$tmp_video" ]]; then
         mv "$tmp_video" "$video"
         log "Embed OK: $(basename "$video")"
         return 0
@@ -3358,6 +3378,7 @@ cmd_fix() {
 
 # ── Command: extract (extract subtitles from video) ──────────────────────────
 EXTRACT_TRACK=""
+EXTRACT_ALL=false
 
 cmd_extract() {
     [[ -z "$FILE_PATH" ]] && die "Specify a video file (e.g., subtool $COMMAND video.mkv)"
@@ -3383,47 +3404,79 @@ cmd_extract() {
         return 1
     fi
 
-    info "Tracks found:"
+    info "$count subtitle track(s) found:"
     for ((idx=0; idx<count; idx++)); do
         local lang title codec
         lang=$(echo "$streams" | jq -r ".streams[$idx].tags.language // \"und\"")
         title=$(echo "$streams" | jq -r ".streams[$idx].tags.title // \"\"")
         codec=$(echo "$streams" | jq -r ".streams[$idx].codec_name // \"?\"")
-        printf "  ${BOLD}%2d${NC}) [${CYAN}%s${NC}] %s (%s)\n" "$((idx))" "$lang" "$title" "$codec"
+        local display="$title"
+        [[ -z "$display" ]] && display=$(_lang_title "$lang")
+        printf "  ${BOLD}%2d${NC}) [${CYAN}%s${NC}] %s (%s)\n" "$idx" "$lang" "$display" "$codec" >&2
     done
 
-    local track
-    if [[ -n "$EXTRACT_TRACK" ]]; then
-        track="$EXTRACT_TRACK"
+    # Determine which tracks to extract
+    local tracks=()
+    if $EXTRACT_ALL; then
+        for ((idx=0; idx<count; idx++)); do tracks+=("$idx"); done
+    elif [[ -n "$EXTRACT_TRACK" ]]; then
+        tracks=("$EXTRACT_TRACK")
     elif [[ "$count" -eq 1 ]]; then
-        track=0
+        tracks=(0)
     else
-        printf "\n"
-        read -rp "$(printf "${BOLD}Track to extract [0-$((count-1))]:${NC} ")" track
-        [[ -z "$track" ]] && track=0
+        printf "\n" >&2
+        read -rp "$(printf "${BOLD}Track to extract (0-$((count-1)), or 'all'):${NC} ")" track_input
+        if [[ "$track_input" == "all" || "$track_input" == "a" ]]; then
+            for ((idx=0; idx<count; idx++)); do tracks+=("$idx"); done
+        else
+            [[ -z "$track_input" ]] && track_input=0
+            tracks=("$track_input")
+        fi
     fi
 
-    local lang codec ext
-    lang=$(echo "$streams" | jq -r ".streams[$track].tags.language // \"und\"")
-    codec=$(echo "$streams" | jq -r ".streams[$track].codec_name // \"srt\"")
+    local extracted=0
+    for track in "${tracks[@]}"; do
+        local lang codec ext
+        lang=$(echo "$streams" | jq -r ".streams[$track].tags.language // \"und\"")
+        codec=$(echo "$streams" | jq -r ".streams[$track].codec_name // \"srt\"")
 
-    case "$codec" in
-        subrip|srt)  ext="srt" ;;
-        ass|ssa)     ext="ass" ;;
-        webvtt)      ext="vtt" ;;
-        hdmv_pgs_subtitle|dvd_subtitle)
-            warn "Bitmap subtitles ($codec) - extracting as .sup"
-            ext="sup" ;;
-        *)           ext="srt" ;;
-    esac
+        case "$codec" in
+            subrip|srt)  ext="srt" ;;
+            ass|ssa)     ext="ass" ;;
+            webvtt)      ext="vtt" ;;
+            hdmv_pgs_subtitle|dvd_subtitle)
+                warn "Track $track: Bitmap subtitles ($codec) - extracting as .sup"
+                ext="sup" ;;
+            *)           ext="srt" ;;
+        esac
 
-    local output="${OUTPUT_DIR}/${base_name}.${lang}.${ext}"
-    ffmpeg -v quiet -i "$FILE_PATH" -map "0:s:${track}" -c:s "$([[ "$ext" == "srt" ]] && echo "srt" || echo "copy")" "$output" -y 2>/dev/null
+        # Detect duplicate languages to append track index for disambiguation
+        local lang_count=0
+        for ((j=0; j<count; j++)); do
+            local jlang
+            jlang=$(echo "$streams" | jq -r ".streams[$j].tags.language // \"und\"")
+            [[ "$jlang" == "$lang" ]] && ((lang_count++)) || true
+        done
 
-    if [[ -s "$output" ]]; then
-        log "Extracted: $output"
-    else
-        err "Extraction failed"
+        local output
+        if [[ "$lang_count" -gt 1 ]]; then
+            output="${OUTPUT_DIR}/${base_name}.${lang}.${track}.${ext}"
+        else
+            output="${OUTPUT_DIR}/${base_name}.${lang}.${ext}"
+        fi
+
+        ffmpeg -v quiet -i "$FILE_PATH" -map "0:s:${track}" -c:s "$([[ "$ext" == "srt" ]] && echo "srt" || echo "copy")" "$output" -y 2>/dev/null
+
+        if [[ -s "$output" ]]; then
+            log "Extracted track $track: $output"
+            ((extracted++)) || true
+        else
+            warn "Track $track: extraction failed"
+        fi
+    done
+
+    if [[ "$extracted" -eq 0 ]]; then
+        err "No tracks extracted"
         return 1
     fi
 }
@@ -3456,15 +3509,34 @@ cmd_embed() {
     info "Video: $(basename "$FILE_PATH")"
     info "Subtitle: $(basename "$EMBED_SUB") ($sub_lang)"
 
+    # Get existing subtitle stream info
+    local streams_json
+    streams_json=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$FILE_PATH" 2>/dev/null)
+    local sub_count
+    sub_count=$(echo "$streams_json" | jq '.streams | length' 2>/dev/null || echo "0")
+
     local sub_title
     sub_title=$(_lang_title "$sub_lang")
-    ffmpeg -v quiet -i "$FILE_PATH" -i "$EMBED_SUB" \
-        -c copy -c:s "$sub_codec" \
-        -metadata:s:s:0 language="$sub_lang" \
-        -metadata:s:s:0 title="$sub_title" \
-        "$output" -y 2>/dev/null
 
-    if [[ -s "$output" ]]; then
+    # Build ffmpeg command with proper mapping and metadata for ALL subtitle streams
+    local ffmpeg_cmd=(ffmpeg -v quiet -i "$FILE_PATH" -i "$EMBED_SUB"
+        -map 0 -map 1:0 -c copy -c:s:"$sub_count" "$sub_codec")
+
+    # Preserve/fix metadata for existing subtitle streams
+    local sidx
+    for ((sidx=0; sidx<sub_count; sidx++)); do
+        local s_lang s_title
+        s_lang=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.language // \"und\"")
+        s_title=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.title // \"\"")
+        [[ -z "$s_title" ]] && s_title=$(_lang_title "$s_lang")
+        ffmpeg_cmd+=(-metadata:s:s:"$sidx" language="$s_lang" -metadata:s:s:"$sidx" title="$s_title")
+    done
+
+    # Set metadata for the new subtitle stream
+    ffmpeg_cmd+=(-metadata:s:s:"$sub_count" language="$sub_lang" -metadata:s:s:"$sub_count" title="$sub_title")
+    ffmpeg_cmd+=("$output" -y)
+
+    if "${ffmpeg_cmd[@]}" 2>/dev/null && [[ -s "$output" ]]; then
         log "Video with subtitles: $output"
     else
         err "Embedding failed"
@@ -3591,6 +3663,7 @@ parse_args() {
             --merge-with)  MERGE_FILE="$2"; shift 2 ;;
             --sub)         EMBED_SUB="$2"; shift 2 ;;
             --track)       EXTRACT_TRACK="$2"; shift 2 ;;
+            --all)         EXTRACT_ALL=true; shift ;;
             --ref)         AUTOSYNC_REF="$2"; shift 2 ;;
             --ref-stream)  AUTOSYNC_REF_STREAM="$2"; shift 2 ;;
             --force-translate) FORCE_TRANSLATE=true; shift ;;
