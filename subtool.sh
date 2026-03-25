@@ -919,7 +919,7 @@ translate_with_claude_code() {
 
     local full_input
     full_input=$(printf '%s\n\n%s' "$prompt" "$content")
-    CLAUDECODE='' printf '%s' "$full_input" | claude -p --model "$model" --effort low --tools "" > "$output" 2>/dev/null || {
+    printf '%s' "$full_input" | env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p --model "$model" --effort low --tools "" --no-session-persistence > "$output" 2>/dev/null || {
         err "Claude Code translation failed"
         return 1
     }
