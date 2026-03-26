@@ -972,25 +972,31 @@ translate_with_claude_code() {
         return 1
     fi
 
-    local prompt
-    prompt=$(_translate_prompt "$src_lang" "$target_lang")
-    local content
-    content=$(<"$input")
+    # Build input file on disk (avoid bash variable limitations with large content)
+    local tmp_input="${CACHE_DIR}/claude_input_$$.txt"
+    _translate_prompt "$src_lang" "$target_lang" > "$tmp_input"
+    printf '\n\n' >> "$tmp_input"
+    cat "$input" >> "$tmp_input"
 
-    local full_input
-    full_input=$(printf '%s\n\n%s' "$prompt" "$content")
     local claude_err="${output}.claude_err"
-    printf '%s' "$full_input" | env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p --model "$model" --effort "$effort" --tools "" --no-session-persistence > "$output" 2>"$claude_err" || {
-        # Show stderr + stdout errors before clearing
-        [[ -s "$claude_err" ]] && warn "$(head -3 "$claude_err")"
+    local exit_code=0
+    env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE \
+        claude -p --model "$model" --effort "$effort" --tools "" --no-session-persistence \
+        < "$tmp_input" > "$output" 2>"$claude_err" || exit_code=$?
+    rm -f "$tmp_input"
+
+    if [[ $exit_code -ne 0 ]]; then
+        [[ -s "$claude_err" ]] && warn "$(head -5 "$claude_err")"
         [[ -s "$output" ]] && warn "$(head -3 "$output")"
         : > "$output"
         rm -f "$claude_err"
-        err "Claude Code translation failed"
+        err "Claude Code translation failed (exit code $exit_code)"
         return 1
-    }
+    fi
     if [[ ! -s "$output" ]]; then
-        [[ -s "$claude_err" ]] && warn "$(head -3 "$claude_err")"
+        if [[ -s "$claude_err" ]]; then
+            warn "Claude stderr: $(head -5 "$claude_err")"
+        fi
         rm -f "$claude_err"
         err "Claude Code produced empty output"
         return 1
