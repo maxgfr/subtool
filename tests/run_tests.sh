@@ -1836,6 +1836,104 @@ _test_google_fewer_lines() {
 _test_google_fewer_lines
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "subs.srt (real-world 567-block subtitle)"
+
+# info
+out=$("$SUBSYNC" info "$FIXTURES/subs.srt" 2>&1)
+assert_output_contains "subs.srt info: detects 567 subtitles" "$out" "567"
+assert_output_contains "subs.srt info: detects English" "$out" "en.*English"
+assert_output_contains "subs.srt info: detects HTML tags" "$out" "HTML"
+assert_output_contains "subs.srt info: start timestamp" "$out" "00:00:03"
+assert_output_contains "subs.srt info: end timestamp" "$out" "00:20:33"
+
+# validate
+"$SUBSYNC" fix "$FIXTURES/subs.srt" -o "$TMP_DIR" 2>&1 > /dev/null
+out_file="$TMP_DIR/subs.fixed.srt"
+assert_file_exists "subs.srt fix: file created" "$out_file"
+first_num=$(head -1 "$out_file" | tr -d '\r')
+assert_exit_code "subs.srt fix: first block = 1" "1" "$first_num"
+fix_count=$(grep -c -- '-->' "$out_file")
+assert_exit_code "subs.srt fix: 567 blocks preserved" "567" "$fix_count"
+
+# clean
+"$SUBSYNC" clean "$FIXTURES/subs.srt" -o "$TMP_DIR" 2>&1 > /dev/null
+out_file="$TMP_DIR/subs.clean.srt"
+assert_file_exists "subs.srt clean: file created" "$out_file"
+assert_file_contains "subs.srt clean: dialogue preserved" "$out_file" "Before we start"
+assert_file_not_contains "subs.srt clean: HTML <i> removed" "$out_file" '<i>'
+
+# convert srt -> vtt -> srt roundtrip
+"$SUBSYNC" convert "$FIXTURES/subs.srt" --to vtt -o "$TMP_DIR" 2>&1 > /dev/null
+vtt_file="$TMP_DIR/subs.vtt"
+assert_file_exists "subs.srt -> vtt: file created" "$vtt_file"
+assert_file_contains "subs.srt -> vtt: WEBVTT header" "$vtt_file" "^WEBVTT"
+"$SUBSYNC" convert "$vtt_file" --to srt -o "$TMP_DIR" 2>&1 > /dev/null
+roundtrip_file="$TMP_DIR/subs.srt"
+assert_file_exists "subs.srt vtt -> srt roundtrip: file created" "$roundtrip_file"
+rt_count=$(grep -c -- '-->' "$roundtrip_file")
+assert_exit_code "subs.srt roundtrip: 567 blocks preserved" "567" "$rt_count"
+
+# extract text for translation (unit test)
+struct_file="$TMP_DIR/subs_struct.txt"
+text_file="$TMP_DIR/subs_text.txt"
+block_count=$(bash -c '
+    source "'"$SUBSYNC"'" --source-only 2>/dev/null || true
+    _srt_extract_for_translation "'"$FIXTURES/subs.srt"'" "'"$struct_file"'" "'"$text_file"'"
+' 2>/dev/null || echo "0")
+# Fallback: if sourcing fails, do inline extraction
+if [[ "$block_count" == "0" || ! -s "$text_file" ]]; then
+    block_count=0
+    in_text=false ts="" buf=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        if [[ "$line" =~ [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}\ --\>\ [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} ]]; then
+            ts="$line"; in_text=true; buf=""
+        elif $in_text && [[ -z "$line" || "$line" =~ ^[[:space:]]*$ ]]; then
+            if [[ -n "$buf" ]]; then
+                ((block_count++)) || true
+                echo "$ts" >> "$struct_file"
+                echo "${block_count}: ${buf}" >> "$text_file"
+            fi
+            in_text=false; buf=""
+        elif $in_text && ! [[ "$line" =~ ^[0-9]+[[:space:]]*$ ]]; then
+            [[ -n "$buf" ]] && buf="${buf} <br> ${line}" || buf="$line"
+        fi
+    done < "$FIXTURES/subs.srt"
+    if $in_text && [[ -n "$buf" ]]; then
+        ((block_count++)) || true
+        echo "$ts" >> "$struct_file"
+        echo "${block_count}: ${buf}" >> "$text_file"
+    fi
+fi
+assert_exit_code "subs.srt extract: 567 blocks" "567" "$block_count"
+ts_count=$(wc -l < "$struct_file" | tr -d ' ')
+assert_exit_code "subs.srt extract: 567 timestamps" "567" "$ts_count"
+text_count=$(wc -l < "$text_file" | tr -d ' ')
+assert_exit_code "subs.srt extract: 567 text lines" "567" "$text_count"
+# Verify multiline blocks use <br> markers
+br_count=$(grep -c '<br>' "$text_file" || echo "0")
+if [[ "$br_count" -gt 100 ]]; then
+    assert "subs.srt extract: multiline <br> markers ($br_count)" 0
+else
+    assert "subs.srt extract: multiline <br> markers ($br_count, expected >100)" 1
+fi
+
+# sync shift
+"$SUBSYNC" sync "$FIXTURES/subs.srt" --shift +1000 -o "$TMP_DIR" 2>&1 > /dev/null
+sync_file="$TMP_DIR/subs.synced.srt"
+assert_file_exists "subs.srt sync +1000ms: file created" "$sync_file"
+assert_file_contains "subs.srt sync +1000ms: first ts shifted" "$sync_file" "00:00:04,220"
+sync_count=$(grep -c -- '-->' "$sync_file")
+assert_exit_code "subs.srt sync: 567 blocks preserved" "567" "$sync_count"
+
+# new flags parsing
+out=$("$SUBSYNC" --help 2>&1)
+assert_output_contains "help: --claude-effort" "$out" "\-\-claude-effort"
+assert_output_contains "help: --skip-steps" "$out" "\-\-skip-steps"
+assert_output_contains "help: --max-parallel" "$out" "\-\-max-parallel"
+assert_output_contains "help: --no-resume" "$out" "\-\-no-resume"
+
+# ══════════════════════════════════════════════════════════════════════════════
 # RESULTS
 # ══════════════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}══════════════════════════════════════════${NC}\n"

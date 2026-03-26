@@ -1256,7 +1256,7 @@ transcribe_video() {
         rm -f "$audio_file"
         if validate_srt "$output"; then
             local sub_count
-            sub_count=$(grep -cE '^[0-9]+$' "$output" 2>/dev/null || echo "0")
+            sub_count=$(tr -d '\r' < "$output" | grep -cE '^[0-9]+$' 2>/dev/null || echo "0")
             log "Transcription OK: $sub_count subtitles generated"
             return 0
         else
@@ -3040,7 +3040,7 @@ cmd_info() {
     local encoding
     encoding=$(file --mime-encoding "$FILE_PATH" 2>/dev/null | awk -F': ' '{print $2}' || echo "unknown")
     line_count=$(wc -l < "$FILE_PATH" | tr -d ' ')
-    sub_count=$(grep -cE '^[0-9]+$' "$FILE_PATH" 2>/dev/null || echo "0")
+    sub_count=$(sed '1s/^\xef\xbb\xbf//' "$FILE_PATH" | tr -d '\r' | grep -cE '^[0-9]+$' 2>/dev/null || echo "0")
 
     # First and last timestamp (format: HH:MM:SS,mmm --> HH:MM:SS,mmm)
     local first_ts last_ts
