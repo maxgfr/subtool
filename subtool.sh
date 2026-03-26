@@ -857,11 +857,12 @@ translate_with_google() {
     local max_parallel="${TRANSLATE_MAX_PARALLEL:-8}"
     info "$num_chunks chunks (max $max_parallel in parallel)"
 
-    # Split text file into chunks
+    # Split text file into chunks (PID-suffixed to avoid race conditions)
+    local chunk_prefix="$CACHE_DIR/trans_chunk_$$"
     local i=0
     while ((i < num_chunks)); do
         local start=$((i * chunk_size + 1))
-        sed -n "${start},$((start + chunk_size - 1))p" "$text_file" > "$CACHE_DIR/trans_chunk_${i}.txt"
+        sed -n "${start},$((start + chunk_size - 1))p" "$text_file" > "${chunk_prefix}_${i}.txt"
         ((i++)) || true
     done
 
@@ -873,8 +874,8 @@ translate_with_google() {
 
         for ((j=batch; j<bend; j++)); do
             (
-                trans -b "${src_lang}:${target_lang}" -i "$CACHE_DIR/trans_chunk_${j}.txt" \
-                    > "$CACHE_DIR/trans_chunk_${j}_out.txt" 2>/dev/null
+                trans -b "${src_lang}:${target_lang}" -i "${chunk_prefix}_${j}.txt" \
+                    > "${chunk_prefix}_${j}_out.txt" 2>/dev/null
             ) &
             pids+=($!)
         done
@@ -896,8 +897,15 @@ translate_with_google() {
     local -A replacements=()
     local map_idx=0
     for ((i=0; i<num_chunks; i++)); do
-        local chunk_out="$CACHE_DIR/trans_chunk_${i}_out.txt"
-        local chunk_in="$CACHE_DIR/trans_chunk_${i}.txt"
+        local chunk_out="${chunk_prefix}_${i}_out.txt"
+        local chunk_in="${chunk_prefix}_${i}.txt"
+
+        if [[ ! -f "$chunk_in" ]]; then
+            warn "Chunk $((i+1)) input missing — skipping"
+            local chunk_lines="${TRANSLATE_CHUNK_SIZE:-80}"
+            ((map_idx += chunk_lines)) || true
+            continue
+        fi
 
         # Read original chunk lines
         local -a orig_lines=()
@@ -950,6 +958,7 @@ translate_with_google() {
 
     # Cleanup
     rm -f "$text_file" "$map_file"
+    rm -f "$CACHE_DIR"/trans_chunk_$$_*.txt 2>/dev/null || true
 }
 
 translate_with_claude_code() {
@@ -970,14 +979,23 @@ translate_with_claude_code() {
 
     local full_input
     full_input=$(printf '%s\n\n%s' "$prompt" "$content")
-    printf '%s' "$full_input" | env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p --model "$model" --effort "$effort" --tools "" --no-session-persistence > "$output" 2>/dev/null || {
-        # claude -p writes errors to stdout, show them before clearing
+    local claude_err="${output}.claude_err"
+    printf '%s' "$full_input" | env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p --model "$model" --effort "$effort" --tools "" --no-session-persistence > "$output" 2>"$claude_err" || {
+        # Show stderr + stdout errors before clearing
+        [[ -s "$claude_err" ]] && warn "$(head -3 "$claude_err")"
         [[ -s "$output" ]] && warn "$(head -3 "$output")"
         : > "$output"
+        rm -f "$claude_err"
         err "Claude Code translation failed"
         return 1
     }
-    [[ -s "$output" ]] || { err "Claude Code produced empty output"; return 1; }
+    if [[ ! -s "$output" ]]; then
+        [[ -s "$claude_err" ]] && warn "$(head -3 "$claude_err")"
+        rm -f "$claude_err"
+        err "Claude Code produced empty output"
+        return 1
+    fi
+    rm -f "$claude_err"
 }
 
 translate_with_zai_codeplan() {
@@ -1331,9 +1349,15 @@ translate_subtitle() {
         local total_lines
         total_lines=$(wc -l < "$text_file" | tr -d ' ')
 
-        # Always send all text in a single call — retry logic handles truncation
-        # Chunking only kicks in for truly massive files (>50k lines, unrealistic for subtitles)
-        local single_call_threshold=50000
+        # Single-call threshold depends on provider output capacity
+        # claude-code/claude ~16k output tokens ≈ 1500 subtitle lines safely
+        # Google handles its own chunking (separate path above)
+        local single_call_threshold
+        case "$provider" in
+            claude-code|claude|openai|mistral|zai-codeplan) single_call_threshold=1500 ;;
+            gemini) single_call_threshold=5000 ;;
+            *) single_call_threshold=1500 ;;
+        esac
         debug "Single-call mode: $total_lines lines (threshold=$single_call_threshold)" || true
 
         if [[ $total_lines -le $single_call_threshold ]]; then
@@ -1376,8 +1400,8 @@ translate_subtitle() {
 
                 for ((i=batch_start; i<batch_end; i++)); do
                     local start=$((i * chunk_size + 1))
-                    local chunk_in="$CACHE_DIR/text_chunk_${i}.txt"
-                    local chunk_out="$CACHE_DIR/text_chunk_${i}_out.txt"
+                    local chunk_in="$CACHE_DIR/text_chunk_$$_${i}.txt"
+                    local chunk_out="$CACHE_DIR/text_chunk_$$_${i}_out.txt"
                     sed -n "${start},$((start + chunk_size - 1))p" "$text_file" > "$chunk_in"
                     _translate_dispatch "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" "$provider" &
                     pids+=($!)
@@ -1393,10 +1417,18 @@ translate_subtitle() {
 
             # Reassemble translated text (retry failed chunks once before fallback)
             for ((i=0; i<num_chunks; i++)); do
-                local chunk_out="$CACHE_DIR/text_chunk_${i}_out.txt"
-                local chunk_in="$CACHE_DIR/text_chunk_${i}.txt"
+                local chunk_out="$CACHE_DIR/text_chunk_$$_${i}_out.txt"
+                local chunk_in="$CACHE_DIR/text_chunk_$$_${i}.txt"
                 if [[ -s "$chunk_out" ]]; then
                     cat "$chunk_out" >> "$text_translated"
+                    # Detect truncated LLM output and pad with original text to maintain alignment
+                    local out_count in_count
+                    out_count=$(grep -cvE '^[[:space:]]*$|^\`\`\`' "$chunk_out" 2>/dev/null || echo "0")
+                    in_count=$(wc -l < "$chunk_in" | tr -d ' ')
+                    if [[ $out_count -gt 0 && $out_count -lt $in_count ]]; then
+                        warn "Chunk $((i+1)): LLM returned $out_count/$in_count lines — padding with original"
+                        tail -n "$((in_count - out_count))" "$chunk_in" >> "$text_translated"
+                    fi
                 elif [[ -s "$chunk_in" ]]; then
                     warn "Chunk $((i+1)) failed — retrying..."
                     if _translate_dispatch "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" "$provider" 2>/dev/null && [[ -s "$chunk_out" ]]; then
@@ -4532,9 +4564,11 @@ cleanup() {
     wait 2>/dev/null || true
     # Remove temp files on exit
     rm -f "$CACHE_DIR"/chunk_*.srt 2>/dev/null || true
-    rm -f "$CACHE_DIR"/text_chunk_*.txt 2>/dev/null || true
+    rm -f "$CACHE_DIR"/text_chunk_$$_*.txt 2>/dev/null || true
     rm -f "$CACHE_DIR"/translate_*.txt 2>/dev/null || true
-    rm -f "$CACHE_DIR"/claude_err_*.txt 2>/dev/null || true
+    rm -f "$CACHE_DIR"/claude_err_*.txt "$CACHE_DIR"/*.claude_err 2>/dev/null || true
+    rm -f "$CACHE_DIR"/trans_chunk_$$_*.txt 2>/dev/null || true
+    rm -f "$CACHE_DIR"/trans_text_$$.txt "$CACHE_DIR"/trans_map_$$.txt 2>/dev/null || true
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
