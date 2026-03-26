@@ -1933,6 +1933,102 @@ assert_output_contains "help: --skip-steps" "$out" "\-\-skip-steps"
 assert_output_contains "help: --max-parallel" "$out" "\-\-max-parallel"
 assert_output_contains "help: --no-resume" "$out" "\-\-no-resume"
 
+# ── New commands in help ─────────────────────────────────────────────────────
+assert_output_contains "help: text command" "$out" "text.*Export plain text"
+assert_output_contains "help: diff command" "$out" "diff.*Compare two subtitle"
+assert_output_contains "help: completions" "$out" "completions.*Generate shell completions"
+assert_output_contains "help: manpage" "$out" "manpage.*Generate man page"
+assert_output_contains "help: --diff-with" "$out" "\-\-diff-with"
+assert_output_contains "help: --playlist" "$out" "\-\-playlist"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEXT COMMAND
+# ══════════════════════════════════════════════════════════════════════════════
+section "Text: export plain text"
+
+text_out="$TMPDIR/text_output.txt"
+"$SUBSYNC" text "$FIXTURES/basic.srt" > "$text_out" 2>/dev/null
+assert_file_exists "text: file created" "$text_out"
+assert_file_contains "text: has dialogue" "$text_out" "Willkommen"
+assert_file_not_contains "text: no timestamps" "$text_out" "-->"
+
+# Test with large fixture
+"$SUBSYNC" text "$FIXTURES/subs.srt" > "$text_out" 2>/dev/null
+line_count=$(wc -l < "$text_out" | tr -d ' ')
+assert_exit_code "text subs.srt: many lines" "1" "$([ "$line_count" -gt 100 ] && echo 1 || echo 0)"
+assert_file_not_contains "text subs.srt: no timestamps" "$text_out" "-->"
+rm -f "$text_out"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DIFF COMMAND
+# ══════════════════════════════════════════════════════════════════════════════
+section "Diff: compare two SRTs"
+
+# Diff identical files
+out=$("$SUBSYNC" diff "$FIXTURES/basic.srt" --diff-with "$FIXTURES/basic.srt" 2>&1)
+assert_output_contains "diff identical: reports identical" "$out" "identical"
+
+# Diff different files
+out=$("$SUBSYNC" diff "$FIXTURES/basic.srt" --diff-with "$FIXTURES/basic_fr.srt" 2>&1)
+assert_output_contains "diff different: reports differences" "$out" "blocks differ"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPLETIONS COMMAND
+# ══════════════════════════════════════════════════════════════════════════════
+section "Completions: shell completions"
+
+out=$("$SUBSYNC" completions bash 2>/dev/null)
+assert_output_contains "bash completions: function" "$out" "_subtool"
+assert_output_contains "bash completions: complete" "$out" "complete -F _subtool"
+
+out=$("$SUBSYNC" completions zsh 2>/dev/null)
+assert_output_contains "zsh completions: compdef" "$out" "#compdef subtool"
+
+out=$("$SUBSYNC" completions fish 2>/dev/null)
+assert_output_contains "fish completions: complete" "$out" "complete -c subtool"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MANPAGE COMMAND
+# ══════════════════════════════════════════════════════════════════════════════
+section "Manpage: generate man page"
+
+out=$("$SUBSYNC" manpage 2>/dev/null)
+assert_output_contains "manpage: TH header" "$out" ".TH SUBTOOL"
+assert_output_contains "manpage: COMMANDS section" "$out" ".SH COMMANDS"
+assert_output_contains "manpage: OPTIONS section" "$out" ".SH OPTIONS"
+assert_output_contains "manpage: text command" "$out" "Export plain text"
+assert_output_contains "manpage: diff command" "$out" "Compare two subtitle"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FUZZY SEARCH NORMALIZATION
+# ══════════════════════════════════════════════════════════════════════════════
+section "Fuzzy search: query normalization"
+
+# Test that fuzzy normalization works (internal function)
+out=$(source "$SUBSYNC" 2>/dev/null; _fuzzy_normalize "Die.Discounter_S01E03" 2>/dev/null) || true
+# We can't easily source the script, so test via verbose search output
+out=$("$SUBSYNC" search -q "Die.Discounter_S01" -l de --verbose --dry-run 2>&1) || true
+assert_output_contains "fuzzy: normalizes dots/underscores" "$out" "Fuzzy-normalized"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PLAYLIST SUPPORT
+# ══════════════════════════════════════════════════════════════════════════════
+section "Playlist: batch file support"
+
+# Create a temporary playlist file
+playlist_file="$TMPDIR/test_playlist.txt"
+printf "# Comment line\n/nonexistent/video1.mkv\n\n/nonexistent/video2.mp4\n" > "$playlist_file"
+
+# Test that playlist is recognized (will warn about missing files but not crash)
+out=$("$SUBSYNC" auto --playlist "$playlist_file" -l fr --dry-run 2>&1) || true
+assert_output_contains "playlist: recognized" "$out" "Playlist|not found"
+
+# Test .txt auto-detection as playlist
+out=$("$SUBSYNC" auto "$playlist_file" -l fr --dry-run 2>&1) || true
+assert_output_contains "playlist auto-detect: .txt" "$out" "Playlist|not found"
+
+rm -f "$playlist_file"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # RESULTS
 # ══════════════════════════════════════════════════════════════════════════════

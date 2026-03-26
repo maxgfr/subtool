@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Single bash script (`subtool.sh`, ~3400 lines) for subtitle management: download, translate, transcribe, convert, sync, clean, merge, fix, extract, embed.
+Single bash script (`subtool.sh`, ~4500 lines) for subtitle management: download, translate, transcribe, convert, sync, clean, merge, fix, extract, embed, diff, text export.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ Single bash script (`subtool.sh`, ~3400 lines) for subtitle management: download
 
 Default source: `opensubtitles-org`. Podnapisi available via `--sources opensubtitles-org,podnapisi`. No API keys needed.
 
-Search flow: `search_all_sources()` → iterates `SOURCES` (comma-separated) → calls `search_<source>()` for each.
+Search flow: `search_all_sources()` → fuzzy-normalizes query via `_fuzzy_normalize()` (strips accents, collapses separators) → iterates `SOURCES` (comma-separated) → calls `search_<source>()` for each.
 
 ### Translation Providers
 
@@ -42,11 +42,11 @@ All providers send subtitles in a single API call by default (threshold 50k line
 
 ## Commands
 
-`get`, `search`, `batch`, `scan`, `auto`, `transcribe`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `fix`, `extract`, `embed`, `config`, `check`, `providers`, `sources`
+`get`, `search`, `batch`, `scan`, `auto`, `transcribe`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `fix`, `extract`, `embed`, `text`, `diff`, `config`, `check`, `providers`, `sources`, `completions`, `manpage`
 
 ### `auto` command
 
-All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file or directory as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable, `--force-transcribe` to skip download and always transcribe). Supports `--dry-run` to preview actions without executing. `--skip-steps download,translate,sync,embed` to skip specific steps. Directory mode tracks completed files in `.subtool_batch_state` for resume on interrupt (`--no-resume` to re-process all).
+All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file, directory, or playlist (.txt) as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable, `--force-transcribe` to skip download and always transcribe). Supports `--dry-run` to preview actions without executing. `--skip-steps download,translate,sync,embed` to skip specific steps. Directory mode tracks completed files in `.subtool_batch_state` for resume on interrupt (`--no-resume` to re-process all). Playlist mode (`--playlist file.txt` or auto-detected from `.txt` extension): reads one video path per line (comments with `#`, blank lines ignored, relative paths resolved from playlist directory).
 
 ### `transcribe` command
 
@@ -60,6 +60,22 @@ Extract subtitle tracks from a video file (MKV, MP4, etc.). Supports `--track <n
 
 Embed an SRT subtitle into a video file. Uses `-map 0 -map 1:0` to preserve all existing streams. Properly sets `language` and `title` metadata on the new subtitle stream AND re-sets metadata on all existing subtitle streams (prevents "piste 1/2" generic labels in players).
 
+### `text` command
+
+Export plain text from a subtitle file (no timestamps, no indices). Output goes to stdout. E.g., `subtool text movie.srt > script.txt`.
+
+### `diff` command
+
+Compare two subtitle files side by side. Shows block-by-block differences with color coding. Usage: `subtool diff file1.srt --diff-with file2.srt`. Reports identical files or number of differing blocks.
+
+### `completions` command
+
+Generate shell completion scripts for bash, zsh, or fish. Usage: `eval "$(subtool completions bash)"`, `subtool completions fish > ~/.config/fish/completions/subtool.fish`.
+
+### `manpage` command
+
+Generate a man page in troff format. Usage: `subtool manpage | man -l -`.
+
 ## CLI
 
 - Positional argument after command = file or directory (auto-detected). E.g., `subtool info movie.srt`, `subtool auto ~/Movies/`
@@ -67,6 +83,8 @@ Embed an SRT subtitle into a video file. Uses `-map 0 -map 1:0` to preserve all 
 - `--auto` — auto-select most downloaded result (skip interactive prompt)
 - `--embed` / `--no-embed` — force/disable subtitle embedding (auto: on by default)
 - `--url <url>` — provide a subtitle URL directly
+- `--diff-with <file>` — second file for `diff` command
+- `--playlist <file>` — text file listing video paths for batch `auto`
 - `--dry-run` — show results without downloading
 - `--json` — JSON output (implies `--quiet`)
 - `--verbose` — debug output via `debug()` to stderr
@@ -86,6 +104,8 @@ Embed an SRT subtitle into a video file. Uses `-map 0 -map 1:0` to preserve all 
 - `_transcribe_dispatch()` — case dispatch for transcription providers (same pattern as `_translate_dispatch`)
 - `_lang_title()` — converts language code to human-readable title (e.g., `fr` → "French") for subtitle track metadata
 - `_detect_stream_lang()` — extracts a text sample from an embedded subtitle stream and auto-detects its language via `detect_lang()`. Used when stream has `language=und`
+- `progress()` — visual progress bar for long operations (translation chunks, batch processing)
+- `_fuzzy_normalize()` — strips accents (via `iconv`), collapses separators, removes punctuation for typo-tolerant search
 
 ## CI/CD
 

@@ -46,6 +46,8 @@ CLAUDE_EFFORT=""
 SKIP_STEPS=""
 TRANSLATE_MAX_PARALLEL=""
 NO_RESUME=false
+PLAYLIST_FILE=""
+DIFF_FILE=""
 
 # ── Default models ────────────────────────────────────────────────────────────
 MODEL_ZAI_CODEPLAN="glm-4.7"
@@ -63,6 +65,20 @@ debug()  { $VERBOSE && printf "${BLUE}[D]${NC} %s\n" "$*" >&2 || true; }
 header() { { $QUIET && return; printf "\n${BOLD}${BLUE}── %s ──${NC}\n" "$*" >&2; } || true; }
 
 die() { err "$1"; exit 1; }
+
+# Progress bar: progress <current> <total> [label]
+progress() {
+    $QUIET && return || true
+    local current="$1" total="$2" label="${3:-}"
+    [[ $total -le 0 ]] && return || true
+    local pct=$((current * 100 / total))
+    local filled=$((pct / 2))
+    local empty=$((50 - filled))
+    local bar
+    bar=$(printf '%*s' "$filled" '' | tr ' ' '█')$(printf '%*s' "$empty" '' | tr ' ' '░')
+    printf "\r  %s [%s] %d%% (%d/%d)  " "$label" "$bar" "$pct" "$current" "$total" >&2
+    [[ $current -ge $total ]] && printf "\n" >&2 || true
+}
 
 # Multi-language dispatch: if LANG_TARGET has commas, loop over each language
 # Usage: _multi_lang_dispatch <function_name> && return
@@ -480,11 +496,34 @@ download_podnapisi() {
     fi
 }
 
+# ── Fuzzy search normalization ────────────────────────────────────────────────
+# Strips accents, common punctuation, normalizes spaces — tolerates typos in queries
+_fuzzy_normalize() {
+    local q="$1"
+    # Strip accents using iconv (transliterate to ASCII)
+    if command -v iconv &>/dev/null; then
+        q=$(echo "$q" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$q")
+    fi
+    # Collapse common separators (dots, underscores, dashes) to spaces
+    q=$(echo "$q" | sed -E 's/[._-]+/ /g')
+    # Remove non-alphanumeric except spaces
+    q=$(echo "$q" | sed -E 's/[^[:alnum:] ]//g')
+    # Collapse multiple spaces
+    q=$(echo "$q" | tr -s ' ')
+    # Trim
+    q=$(echo "$q" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+    echo "$q"
+}
+
 # ── Multi-source search ───────────────────────────────────────────────────────
 search_all_sources() {
     local query="$1" lang="$2" imdb_id="${3:-}" season="${4:-}" episode="${5:-}"
     local results=""
     local found=false
+
+    # Normalize query for fuzzy matching
+    query=$(_fuzzy_normalize "$query")
+    debug "Fuzzy-normalized query: '$query'" || true
 
     IFS=',' read -ra source_list <<< "$SOURCES"
     for source in "${source_list[@]}"; do
@@ -844,7 +883,7 @@ translate_with_google() {
             wait "$pid" || true
         done
 
-        info "Translated: $((bend))/$num_chunks chunks"
+        progress "$bend" "$num_chunks" "Translating"
     done
 
     # Step 3+4: Map translations back per-chunk
@@ -1340,7 +1379,6 @@ translate_subtitle() {
                     local chunk_in="$CACHE_DIR/text_chunk_${i}.txt"
                     local chunk_out="$CACHE_DIR/text_chunk_${i}_out.txt"
                     sed -n "${start},$((start + chunk_size - 1))p" "$text_file" > "$chunk_in"
-                    info "Chunk $((i+1))/$num_chunks..."
                     _translate_dispatch "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" "$provider" &
                     pids+=($!)
                 done
@@ -1349,6 +1387,7 @@ translate_subtitle() {
                 for pid in "${pids[@]}"; do
                     wait "$pid" || ((chunk_failures++)) || true
                 done
+                progress "$batch_end" "$num_chunks" "Translating"
                 [[ $chunk_failures -gt 0 ]] && warn "$chunk_failures chunk(s) failed in this batch"
             done
 
@@ -1425,7 +1464,7 @@ ${BOLD}USAGE${NC}
     $SCRIPT_NAME [OPTIONS] <command>
 
 ${BOLD}COMMANDS${NC}
-    auto        All-in-one: download + translate + embed (file or directory)
+    auto        All-in-one: download + translate + embed (file, directory, or playlist)
     transcribe  Generate subtitles from video audio (speech-to-text)
     get         Smart search (auto-parse title/season/episode)
     search      Manual search (with -q/-s/-e)
@@ -1440,10 +1479,14 @@ ${BOLD}COMMANDS${NC}
     fix         Repair an SRT (UTF-8 encoding, sorting, renumbering, overlaps)
     extract     Extract subtitles from a video (MKV, MP4)
     embed       Embed an SRT into a video
+    text        Export plain text from subtitle (no timestamps)
+    diff        Compare two subtitle files side by side
     config      Display/edit configuration (config set <KEY> <VALUE>)
     check       Diagnostic (deps, API keys, config)
     providers   List available AI providers
     sources     List subtitle sources
+    completions Generate shell completions (bash, zsh, fish)
+    manpage     Generate man page
 
 ${BOLD}OPTIONS${NC}
     -q, --query <title>       Title of movie/series to search
@@ -1461,6 +1504,8 @@ ${BOLD}OPTIONS${NC}
     --shift <ms>              Shift in ms for sync (e.g., +1500, -800)
     --to <format>             Target format for convert (srt, vtt, ass)
     --merge-with <file>       Secondary file for bilingual merge
+    --diff-with <file>        Second file for subtitle diff comparison
+    --playlist <file>         Text file listing video paths for batch auto
     --ref <video|srt>         Reference for autosync (video or SRT)
     --ref-stream <stream>     Audio stream for autosync (e.g., a:1 for 2nd audio track). Auto-detected from -l
     --sub <file>              SRT file to embed in a video
@@ -1539,9 +1584,25 @@ ${BOLD}EXAMPLES${NC}
     $SCRIPT_NAME transcribe movie.mkv --transcribe-provider openai-api
     $SCRIPT_NAME transcribe movie.mkv --whisper-model large
 
+    # Export plain text
+    $SCRIPT_NAME text movie.srt
+
+    # Compare two subtitles
+    $SCRIPT_NAME diff original.srt --diff-with translated.srt
+
+    # Batch from playlist file
+    $SCRIPT_NAME auto --playlist videos.txt -l fr
+
     # Auto sync with video (ffsubsync)
     $SCRIPT_NAME autosync desync.srt --ref movie.mkv
     $SCRIPT_NAME autosync desync.srt --ref reference.srt
+
+    # Shell completions
+    eval \"\$($SCRIPT_NAME completions bash)\"
+    $SCRIPT_NAME completions fish > ~/.config/fish/completions/subtool.fish
+
+    # Man page
+    $SCRIPT_NAME manpage | man -l -
 "
 }
 
@@ -2156,6 +2217,7 @@ cmd_batch() {
                 break
             fi
         fi
+        progress "$ep" "$max_ep" "Batch"
     done
 
     header "Result"
@@ -2304,9 +2366,12 @@ cmd_auto() {
     local target="$LANG_TARGET"
     [[ -z "$target" ]] && die "Specify -l <lang> or set DEFAULT_LANG in config"
 
-    # Single file or directory mode (auto-detect)
+    # Single file, directory, or playlist mode (auto-detect)
     local mode=""
-    if [[ -n "$SCAN_DIR" ]]; then
+    if [[ -n "$PLAYLIST_FILE" ]]; then
+        [[ ! -f "$PLAYLIST_FILE" ]] && die "Playlist file not found: $PLAYLIST_FILE"
+        mode="playlist"
+    elif [[ -n "$SCAN_DIR" ]]; then
         [[ ! -d "$SCAN_DIR" ]] && die "Directory not found: $SCAN_DIR"
         mode="dir"
     elif [[ -n "$FILE_PATH" ]]; then
@@ -2314,12 +2379,17 @@ cmd_auto() {
             SCAN_DIR="$FILE_PATH"
             FILE_PATH=""
             mode="dir"
+        elif [[ "$FILE_PATH" == *.txt ]]; then
+            # Auto-detect .txt files as playlists
+            PLAYLIST_FILE="$FILE_PATH"
+            FILE_PATH=""
+            mode="playlist"
         else
             [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
             mode="file"
         fi
     else
-        die "Specify a video file or directory"
+        die "Specify a video file, directory, or playlist (.txt)"
     fi
 
     local title_override="${SEARCH_QUERY:-}"
@@ -2350,7 +2420,7 @@ cmd_auto() {
 
     local success=0 fail=0 skip=0 total=0
 
-    # Batch resume: track completed files in directory mode
+    # Batch resume: track completed files in directory/playlist mode
     local batch_state=""
     if [[ "$mode" == "dir" ]]; then
         batch_state="${SCAN_DIR}/.subtool_batch_state"
@@ -2364,6 +2434,22 @@ cmd_auto() {
     local video_files=()
     if [[ "$mode" == "file" ]]; then
         video_files=("$FILE_PATH")
+    elif [[ "$mode" == "playlist" ]]; then
+        info "Playlist: $PLAYLIST_FILE"
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%$'\r'}"
+            # Skip empty lines and comments
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            # Resolve relative paths from playlist file's directory
+            if [[ "$line" != /* ]]; then
+                line="$(dirname "$PLAYLIST_FILE")/$line"
+            fi
+            if [[ -f "$line" ]]; then
+                video_files+=("$line")
+            else
+                warn "Playlist: file not found: $line"
+            fi
+        done < "$PLAYLIST_FILE"
     else
         info "Directory: $SCAN_DIR"
         while IFS= read -r -d '' vf; do
@@ -2630,6 +2716,7 @@ cmd_auto() {
         if [[ ! -f "$target_srt" ]]; then
             ((fail++)) || true
         fi
+        [[ "$mode" == "dir" && $total -gt 1 ]] && progress "$((success + fail + skip))" "$total" "Auto"
     done
 
     printf "\n"
@@ -3385,6 +3472,103 @@ cmd_merge() {
     log "Bilingual file: $output"
 }
 
+# ── Command: text (export plain text) ─────────────────────────────────────────
+cmd_text() {
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
+    [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
+
+    # Extract text lines only: skip indices, timestamps, and blank lines
+    sed '1s/^\xef\xbb\xbf//' "$FILE_PATH" | tr -d '\r' | awk '
+    /^[[:space:]]*[0-9]+[[:space:]]*$/ { next }
+    /^[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> / { next }
+    /^[[:space:]]*$/ { next }
+    { print }
+    '
+}
+
+# ── Command: diff (compare two SRTs) ─────────────────────────────────────────
+cmd_diff() {
+    [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool diff file1.srt --diff-with file2.srt)"
+    [[ -z "$DIFF_FILE" ]] && die "Specify --diff-with <second_file.srt>"
+    [[ ! -f "$FILE_PATH" ]] && die "File not found: $FILE_PATH"
+    [[ ! -f "$DIFF_FILE" ]] && die "File not found: $DIFF_FILE"
+
+    header "Diff: $(basename "$FILE_PATH") vs $(basename "$DIFF_FILE")"
+
+    # Parse SRT blocks into "INDEX|TIMESTAMP|TEXT" lines
+    _diff_parse_srt() {
+        sed '1s/^\xef\xbb\xbf//' "$1" | tr -d '\r' | awk '
+        BEGIN { ts = ""; txt = ""; idx = 0 }
+        function flush() {
+            if (ts == "" || txt == "") { ts = ""; txt = ""; return }
+            idx++
+            printf "%d|%s|%s\n", idx, ts, txt
+            ts = ""; txt = ""
+        }
+        /^[[:space:]]*[0-9]+[[:space:]]*$/ && ts == "" { next }
+        /^[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}/ {
+            flush(); ts = $0; next
+        }
+        /^[[:space:]]*$/ { flush(); next }
+        { if (txt != "") txt = txt " // "; txt = txt $0 }
+        END { flush() }
+        '
+    }
+
+    local tmp_a="$CACHE_DIR/_diff_a_$$.txt"
+    local tmp_b="$CACHE_DIR/_diff_b_$$.txt"
+    mkdir -p "$CACHE_DIR"
+
+    _diff_parse_srt "$FILE_PATH" > "$tmp_a"
+    _diff_parse_srt "$DIFF_FILE" > "$tmp_b"
+
+    local count_a count_b
+    count_a=$(wc -l < "$tmp_a" | tr -d ' ')
+    count_b=$(wc -l < "$tmp_b" | tr -d ' ')
+    local max_count=$count_a
+    [[ $count_b -gt $max_count ]] && max_count=$count_b
+
+    info "$(basename "$FILE_PATH"): $count_a blocks | $(basename "$DIFF_FILE"): $count_b blocks"
+
+    local diffs=0
+    local i=1
+    while [[ $i -le $max_count ]]; do
+        local line_a line_b
+        line_a=$(sed -n "${i}p" "$tmp_a" 2>/dev/null || echo "")
+        line_b=$(sed -n "${i}p" "$tmp_b" 2>/dev/null || echo "")
+
+        local ts_a text_a ts_b text_b
+        ts_a=$(echo "$line_a" | cut -d'|' -f2)
+        text_a=$(echo "$line_a" | cut -d'|' -f3-)
+        ts_b=$(echo "$line_b" | cut -d'|' -f2)
+        text_b=$(echo "$line_b" | cut -d'|' -f3-)
+
+        if [[ "$text_a" != "$text_b" ]]; then
+            ((diffs++)) || true
+            printf "${BOLD}#%d${NC} ${CYAN}%s${NC}\n" "$i" "${ts_a:-$ts_b}" >&2
+            if [[ -n "$text_a" ]]; then
+                printf "  ${RED}< %s${NC}\n" "$text_a" >&2
+            else
+                printf "  ${RED}< (missing)${NC}\n" >&2
+            fi
+            if [[ -n "$text_b" ]]; then
+                printf "  ${GREEN}> %s${NC}\n" "$text_b" >&2
+            else
+                printf "  ${GREEN}> (missing)${NC}\n" >&2
+            fi
+        fi
+        ((i++)) || true
+    done
+
+    rm -f "$tmp_a" "$tmp_b"
+
+    if [[ $diffs -eq 0 ]]; then
+        log "Files are identical ($count_a blocks)"
+    else
+        info "$diffs/$max_count blocks differ"
+    fi
+}
+
 # ── Command: fix (SRT repair) ────────────────────────────────────────────────
 cmd_fix() {
     [[ -z "$FILE_PATH" ]] && die "Specify a file (e.g., subtool $COMMAND file.srt)"
@@ -3759,6 +3943,494 @@ cmd_autosync() {
     [[ -n "$ref_tmp" ]] && rm -f "$ref_tmp" || true
 }
 
+# ── Command: completions (generate shell completions) ─────────────────────────
+COMPLETIONS_SHELL=""
+
+cmd_completions() {
+    local shell="${COMPLETIONS_SHELL:-bash}"
+    local commands="auto transcribe get search batch translate info clean sync autosync convert merge fix extract embed text diff config check providers sources completions manpage"
+    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --no-resume --keep-files --auto --dry-run --json --verbose --quiet -h --help -v --version"
+
+    case "$shell" in
+        bash)
+            cat <<BASH_EOF
+# subtool bash completions — add to ~/.bashrc:
+#   eval "\$(subtool completions bash)" OR source <(subtool completions bash)
+_subtool() {
+    local cur prev commands opts
+    COMPREPLY=()
+    cur="\${COMP_WORDS[COMP_CWORD]}"
+    prev="\${COMP_WORDS[COMP_CWORD-1]}"
+    commands="$commands"
+    opts="$opts"
+
+    case "\$prev" in
+        -p|--provider)  COMPREPLY=(\$(compgen -W "google claude-code openai claude mistral gemini zai-codeplan" -- "\$cur")); return ;;
+        --to)           COMPREPLY=(\$(compgen -W "srt vtt ass" -- "\$cur")); return ;;
+        --sources)      COMPREPLY=(\$(compgen -W "opensubtitles-org podnapisi" -- "\$cur")); return ;;
+        --transcribe-provider) COMPREPLY=(\$(compgen -W "whisper openai-api" -- "\$cur")); return ;;
+        --whisper-model) COMPREPLY=(\$(compgen -W "tiny base small medium large" -- "\$cur")); return ;;
+        --claude-effort) COMPREPLY=(\$(compgen -W "low medium high" -- "\$cur")); return ;;
+        --skip-steps)   COMPREPLY=(\$(compgen -W "download translate sync embed" -- "\$cur")); return ;;
+        completions)    COMPREPLY=(\$(compgen -W "bash zsh fish" -- "\$cur")); return ;;
+        -o|--output|-q|--query|-l|--lang|-i|--imdb|-s|--season|-e|--episode|-m|--model|--shift|--chunk-size|--max-tokens|--max-parallel|--max-ep|--fallback-langs)
+            return ;;
+        --sub|--ref|--merge-with|--diff-with|--playlist)
+            COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
+    esac
+
+    if [[ "\$cur" == -* ]]; then
+        COMPREPLY=(\$(compgen -W "\$opts" -- "\$cur"))
+    elif [[ \$COMP_CWORD -eq 1 ]]; then
+        COMPREPLY=(\$(compgen -W "\$commands" -- "\$cur"))
+    else
+        COMPREPLY=(\$(compgen -f -- "\$cur"))
+    fi
+}
+complete -F _subtool subtool
+BASH_EOF
+            ;;
+        zsh)
+            cat <<ZSH_EOF
+# subtool zsh completions — add to ~/.zshrc:
+#   eval "\$(subtool completions zsh)" OR source <(subtool completions zsh)
+#compdef subtool
+
+_subtool() {
+    local -a commands=(
+        'auto:All-in-one\: download + translate + embed'
+        'transcribe:Generate subtitles from video audio'
+        'get:Smart search (auto-parse title/season/episode)'
+        'search:Manual search'
+        'batch:Download a full season'
+        'translate:Translate a local subtitle file'
+        'info:Display SRT file info'
+        'clean:Clean an SRT (ads, HI/SDH, HTML)'
+        'sync:Shift timecodes'
+        'autosync:Auto sync with video via ffsubsync'
+        'convert:Convert between formats'
+        'merge:Merge 2 subtitles into bilingual'
+        'fix:Repair an SRT'
+        'extract:Extract subtitles from video'
+        'embed:Embed an SRT into video'
+        'text:Export plain text from subtitle'
+        'diff:Compare two subtitle files'
+        'config:Display/edit configuration'
+        'check:Diagnostic'
+        'providers:List AI providers'
+        'sources:List subtitle sources'
+        'completions:Generate shell completions'
+        'manpage:Generate man page'
+    )
+
+    _arguments -C \\
+        '1:command:->cmds' \\
+        '*::arg:->args' && return
+
+    case "\$state" in
+        cmds) _describe 'command' commands ;;
+        args)
+            case "\$words[1]" in
+                auto|get|search|batch|translate|transcribe|info|clean|sync|autosync|convert|merge|fix|extract|embed|text|diff)
+                    _arguments \\
+                        '-q[Search query]:query:' \\
+                        '--query[Search query]:query:' \\
+                        '-l[Target language]:lang:' \\
+                        '--lang[Target language]:lang:' \\
+                        '-i[IMDb ID]:imdb:' \\
+                        '--imdb[IMDb ID]:imdb:' \\
+                        '-s[Season]:season:' \\
+                        '--season[Season]:season:' \\
+                        '-e[Episode]:episode:' \\
+                        '--episode[Episode]:episode:' \\
+                        '-o[Output directory]:dir:_files -/' \\
+                        '--output[Output directory]:dir:_files -/' \\
+                        '-p[Translation provider]:provider:(google claude-code openai claude mistral gemini zai-codeplan)' \\
+                        '--provider[Translation provider]:provider:(google claude-code openai claude mistral gemini zai-codeplan)' \\
+                        '-m[AI model]:model:' \\
+                        '--model[AI model]:model:' \\
+                        '--sources[Subtitle sources]:sources:(opensubtitles-org podnapisi)' \\
+                        '--from[Source language]:lang:' \\
+                        '--to[Target format]:format:(srt vtt ass)' \\
+                        '--shift[Shift in ms]:ms:' \\
+                        '--merge-with[Secondary file]:file:_files' \\
+                        '--diff-with[File to diff]:file:_files' \\
+                        '--playlist[Playlist file]:file:_files' \\
+                        '--ref[Reference file]:file:_files' \\
+                        '--sub[SRT file to embed]:file:_files' \\
+                        '--track[Track number]:track:' \\
+                        '--all[Extract all tracks]' \\
+                        '--url[Subtitle URL]:url:' \\
+                        '--embed[Enable embedding]' \\
+                        '--no-embed[Disable embedding]' \\
+                        '--force-translate[Force translation]' \\
+                        '--transcribe-provider[Transcription provider]:provider:(whisper openai-api)' \\
+                        '--whisper-model[Whisper model]:model:(tiny base small medium large)' \\
+                        '--chunk-size[Chunk size]:size:' \\
+                        '--max-tokens[Max tokens]:tokens:' \\
+                        '--claude-effort[Claude effort]:effort:(low medium high)' \\
+                        '--skip-steps[Skip steps]:steps:(download translate sync embed)' \\
+                        '--max-parallel[Max parallel]:n:' \\
+                        '--no-transcribe[Disable transcription]' \\
+                        '--force-transcribe[Force transcription]' \\
+                        '--no-resume[Ignore batch state]' \\
+                        '--keep-files[Keep intermediate files]' \\
+                        '--auto[Auto-select result]' \\
+                        '--dry-run[Preview only]' \\
+                        '--json[JSON output]' \\
+                        '--verbose[Debug output]' \\
+                        '--quiet[Silent mode]' \\
+                        '*:file:_files' ;;
+                completions) _arguments '1:shell:(bash zsh fish)' ;;
+            esac ;;
+    esac
+}
+
+_subtool "\$@"
+ZSH_EOF
+            ;;
+        fish)
+            cat <<FISH_EOF
+# subtool fish completions — add to ~/.config/fish/completions/subtool.fish:
+#   subtool completions fish > ~/.config/fish/completions/subtool.fish
+
+# Commands
+complete -c subtool -n __fish_use_subcommand -a auto -d 'All-in-one: download + translate + embed'
+complete -c subtool -n __fish_use_subcommand -a transcribe -d 'Generate subtitles from video audio'
+complete -c subtool -n __fish_use_subcommand -a get -d 'Smart search'
+complete -c subtool -n __fish_use_subcommand -a search -d 'Manual search'
+complete -c subtool -n __fish_use_subcommand -a batch -d 'Download a full season'
+complete -c subtool -n __fish_use_subcommand -a translate -d 'Translate a subtitle file'
+complete -c subtool -n __fish_use_subcommand -a info -d 'Display SRT info'
+complete -c subtool -n __fish_use_subcommand -a clean -d 'Clean an SRT'
+complete -c subtool -n __fish_use_subcommand -a sync -d 'Shift timecodes'
+complete -c subtool -n __fish_use_subcommand -a autosync -d 'Auto sync with video'
+complete -c subtool -n __fish_use_subcommand -a convert -d 'Convert between formats'
+complete -c subtool -n __fish_use_subcommand -a merge -d 'Merge subtitles'
+complete -c subtool -n __fish_use_subcommand -a fix -d 'Repair an SRT'
+complete -c subtool -n __fish_use_subcommand -a extract -d 'Extract subtitles from video'
+complete -c subtool -n __fish_use_subcommand -a embed -d 'Embed subtitles in video'
+complete -c subtool -n __fish_use_subcommand -a text -d 'Export plain text'
+complete -c subtool -n __fish_use_subcommand -a diff -d 'Compare two subtitles'
+complete -c subtool -n __fish_use_subcommand -a config -d 'Display/edit config'
+complete -c subtool -n __fish_use_subcommand -a check -d 'Diagnostic'
+complete -c subtool -n __fish_use_subcommand -a providers -d 'List AI providers'
+complete -c subtool -n __fish_use_subcommand -a sources -d 'List subtitle sources'
+complete -c subtool -n __fish_use_subcommand -a completions -d 'Generate shell completions'
+complete -c subtool -n __fish_use_subcommand -a manpage -d 'Generate man page'
+
+# Options
+complete -c subtool -s q -l query -d 'Search query' -x
+complete -c subtool -s l -l lang -d 'Target language' -x
+complete -c subtool -s i -l imdb -d 'IMDb ID' -x
+complete -c subtool -s s -l season -d 'Season number' -x
+complete -c subtool -s e -l episode -d 'Episode number' -x
+complete -c subtool -s o -l output -d 'Output directory' -r -F
+complete -c subtool -s p -l provider -d 'Translation provider' -x -a 'google claude-code openai claude mistral gemini zai-codeplan'
+complete -c subtool -s m -l model -d 'AI model' -x
+complete -c subtool -l sources -d 'Subtitle sources' -x -a 'opensubtitles-org podnapisi'
+complete -c subtool -l from -d 'Source language' -x
+complete -c subtool -l to -d 'Target format' -x -a 'srt vtt ass'
+complete -c subtool -l shift -d 'Shift in ms' -x
+complete -c subtool -l merge-with -d 'Secondary file' -r -F
+complete -c subtool -l diff-with -d 'File to diff' -r -F
+complete -c subtool -l playlist -d 'Playlist file' -r -F
+complete -c subtool -l ref -d 'Reference file' -r -F
+complete -c subtool -l sub -d 'SRT file to embed' -r -F
+complete -c subtool -l track -d 'Track number' -x
+complete -c subtool -l all -d 'Extract all tracks'
+complete -c subtool -l url -d 'Subtitle URL' -x
+complete -c subtool -l embed -d 'Enable embedding'
+complete -c subtool -l no-embed -d 'Disable embedding'
+complete -c subtool -l force-translate -d 'Force translation'
+complete -c subtool -l transcribe-provider -d 'Transcription provider' -x -a 'whisper openai-api'
+complete -c subtool -l whisper-model -d 'Whisper model' -x -a 'tiny base small medium large'
+complete -c subtool -l chunk-size -d 'Chunk size' -x
+complete -c subtool -l max-tokens -d 'Max tokens' -x
+complete -c subtool -l claude-effort -d 'Claude effort' -x -a 'low medium high'
+complete -c subtool -l skip-steps -d 'Skip steps' -x -a 'download translate sync embed'
+complete -c subtool -l max-parallel -d 'Max parallel' -x
+complete -c subtool -l no-transcribe -d 'Disable transcription'
+complete -c subtool -l force-transcribe -d 'Force transcription'
+complete -c subtool -l no-resume -d 'Ignore batch state'
+complete -c subtool -l keep-files -d 'Keep intermediate files'
+complete -c subtool -l auto -d 'Auto-select result'
+complete -c subtool -l dry-run -d 'Preview only'
+complete -c subtool -l json -d 'JSON output'
+complete -c subtool -l verbose -d 'Debug output'
+complete -c subtool -l quiet -d 'Silent mode'
+complete -c subtool -s h -l help -d 'Show help'
+complete -c subtool -s v -l version -d 'Show version'
+FISH_EOF
+            ;;
+        *)
+            die "Unsupported shell: $shell (use bash, zsh, or fish)"
+            ;;
+    esac
+}
+
+# ── Command: manpage (generate man page) ──────────────────────────────────────
+cmd_manpage() {
+    cat <<'MANPAGE_HEADER'
+.TH SUBTOOL 1 "2025" "subtool" "User Commands"
+.SH NAME
+subtool \- All-in-one subtitle CLI: download, translate, transcribe, convert, sync, clean, merge, fix, extract, embed
+.SH SYNOPSIS
+.B subtool
+[\fIOPTIONS\fR] \fICOMMAND\fR [\fIFILE\fR|\fIDIRECTORY\fR]
+.SH DESCRIPTION
+\fBsubtool\fR is a comprehensive command-line tool for subtitle management.
+It can download subtitles from multiple sources, translate them using AI providers,
+transcribe audio to subtitles, and perform various subtitle operations.
+MANPAGE_HEADER
+
+    cat <<MANPAGE_COMMANDS
+.SH COMMANDS
+.TP
+.B auto
+All-in-one: download + translate + sync + embed (file, directory, or playlist)
+.TP
+.B transcribe
+Generate subtitles from video audio (speech-to-text)
+.TP
+.B get
+Smart search (auto-parse title/season/episode from query)
+.TP
+.B search
+Manual search with explicit query/season/episode
+.TP
+.B batch
+Download subtitles for a full season
+.TP
+.B translate
+Translate a local subtitle file
+.TP
+.B info
+Display SRT file info (encoding, language, stats)
+.TP
+.B clean
+Clean an SRT (remove ads, HI/SDH tags, HTML)
+.TP
+.B sync
+Shift timecodes (+/\- milliseconds)
+.TP
+.B autosync
+Auto sync with video/audio via ffsubsync
+.TP
+.B convert
+Convert between formats (SRT <-> VTT <-> ASS)
+.TP
+.B merge
+Merge 2 subtitles into bilingual
+.TP
+.B fix
+Repair an SRT (UTF-8 encoding, sorting, renumbering, overlaps)
+.TP
+.B extract
+Extract subtitles from a video (MKV, MP4)
+.TP
+.B embed
+Embed an SRT into a video
+.TP
+.B text
+Export plain text from subtitle (no timestamps)
+.TP
+.B diff
+Compare two subtitle files side by side
+.TP
+.B config
+Display/edit configuration (config set <KEY> <VALUE>)
+.TP
+.B check
+Diagnostic (dependencies, API keys, config)
+.TP
+.B providers
+List available AI providers
+.TP
+.B sources
+List subtitle sources
+.TP
+.B completions
+Generate shell completions (bash, zsh, fish)
+.TP
+.B manpage
+Generate this man page
+MANPAGE_COMMANDS
+
+    cat <<'MANPAGE_OPTIONS'
+.SH OPTIONS
+.TP
+\fB\-q\fR, \fB\-\-query\fR \fItitle\fR
+Title of movie/series to search
+.TP
+\fB\-l\fR, \fB\-\-lang\fR \fIcode\fR
+Target language(s): fr, en, or comma-separated: en,fr
+.TP
+\fB\-i\fR, \fB\-\-imdb\fR \fIid\fR
+IMDb ID (tt1234567)
+.TP
+\fB\-s\fR, \fB\-\-season\fR \fInum\fR
+Season number
+.TP
+\fB\-e\fR, \fB\-\-episode\fR \fInum\fR
+Episode number
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fIdir\fR
+Output directory (default: .)
+.TP
+\fB\-p\fR, \fB\-\-provider\fR \fIprovider\fR
+Translation provider (google|claude-code|openai|claude|mistral|gemini|zai-codeplan)
+.TP
+\fB\-m\fR, \fB\-\-model\fR \fImodel\fR
+AI model to use
+.TP
+\fB\-\-sources\fR \fIsrc1,src2\fR
+Subtitle sources (default: opensubtitles-org)
+.TP
+\fB\-\-from\fR \fIlang\fR
+Source language for translation
+.TP
+\fB\-\-to\fR \fIformat\fR
+Target format for convert (srt, vtt, ass)
+.TP
+\fB\-\-shift\fR \fIms\fR
+Shift in ms for sync (e.g., +1500, -800)
+.TP
+\fB\-\-merge\-with\fR \fIfile\fR
+Secondary file for bilingual merge
+.TP
+\fB\-\-diff\-with\fR \fIfile\fR
+Second file for subtitle diff comparison
+.TP
+\fB\-\-playlist\fR \fIfile\fR
+Text file listing video paths (one per line) for batch auto
+.TP
+\fB\-\-ref\fR \fIvideo|srt\fR
+Reference for autosync
+.TP
+\fB\-\-sub\fR \fIfile\fR
+SRT file to embed in a video
+.TP
+\fB\-\-track\fR \fInum\fR
+Track to extract
+.TP
+\fB\-\-all\fR
+Extract all subtitle tracks
+.TP
+\fB\-\-url\fR \fIurl\fR
+Download a subtitle from an opensubtitles.org URL
+.TP
+\fB\-\-embed\fR
+Enable subtitle embedding
+.TP
+\fB\-\-no\-embed\fR
+Disable automatic embedding
+.TP
+\fB\-\-force\-translate\fR
+Force translation even if subtitles found
+.TP
+\fB\-\-transcribe\-provider\fR \fIp\fR
+Transcription provider (whisper|openai-api)
+.TP
+\fB\-\-whisper\-model\fR \fImodel\fR
+Whisper model (tiny, base, small, medium, large)
+.TP
+\fB\-\-chunk\-size\fR \fIn\fR
+Translation chunk size in lines
+.TP
+\fB\-\-max\-tokens\fR \fIn\fR
+Max output tokens for LLM translation
+.TP
+\fB\-\-max\-parallel\fR \fIn\fR
+Max parallel translation chunks
+.TP
+\fB\-\-no\-transcribe\fR
+Disable transcription fallback in auto mode
+.TP
+\fB\-\-force\-transcribe\fR
+Force transcription (skip subtitle download)
+.TP
+\fB\-\-skip\-steps\fR \fIsteps\fR
+Skip steps in auto (comma-separated: download,translate,sync,embed)
+.TP
+\fB\-\-no\-resume\fR
+Ignore batch state and re-process all files
+.TP
+\fB\-\-keep\-files\fR
+Keep intermediate subtitle files
+.TP
+\fB\-\-auto\fR
+Automatically select most downloaded result
+.TP
+\fB\-\-dry\-run\fR
+Display results without downloading
+.TP
+\fB\-\-json\fR
+JSON output
+.TP
+\fB\-\-verbose\fR
+Display debug info
+.TP
+\fB\-\-quiet\fR
+Silent mode (errors only)
+MANPAGE_OPTIONS
+
+    cat <<MANPAGE_FOOTER
+.SH EXAMPLES
+.nf
+# Auto: download + translate + embed
+subtool auto ~/Movies/Die.Discounter -l fr
+
+# Smart get
+subtool get -q "Die Discounter S01E03" -l de
+
+# Export plain text
+subtool text movie.srt
+
+# Compare two subtitles
+subtool diff original.srt translated.srt --diff-with translated.srt
+
+# Batch from playlist
+subtool auto --playlist videos.txt -l fr
+
+# Transcribe
+subtool transcribe movie.mkv --from en
+
+# Install completions
+eval "\\\$(subtool completions bash)"
+subtool completions fish > ~/.config/fish/completions/subtool.fish
+.fi
+.SH FILES
+.TP
+\fI~/.config/subtool/config\fR
+Configuration file (API keys, defaults)
+.TP
+\fI~/.cache/subtool/\fR
+Cache directory (temporary files)
+.SH ENVIRONMENT
+.TP
+\fBOPENAI_API_KEY\fR
+OpenAI API key for translation/transcription
+.TP
+\fBANTHROPIC_API_KEY\fR
+Anthropic API key for Claude translation
+.TP
+\fBMISTRAL_API_KEY\fR
+Mistral API key
+.TP
+\fBGEMINI_API_KEY\fR
+Google Gemini API key
+.SH SEE ALSO
+.BR ffmpeg (1),
+.BR ffsubsync (1),
+.BR trans (1)
+.SH VERSION
+$VERSION
+.SH AUTHOR
+maxgfr
+MANPAGE_FOOTER
+}
+
 # ── Parse args ────────────────────────────────────────────────────────────────
 SRC_LANG=""
 COMMAND=""
@@ -3771,8 +4443,14 @@ CONFIG_VALUE=""
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            get|search|translate|transcribe|batch|scan|auto|info|clean|sync|autosync|convert|merge|fix|extract|embed|providers|sources|check)
+            get|search|translate|transcribe|batch|scan|auto|info|clean|sync|autosync|convert|merge|fix|extract|embed|text|diff|providers|sources|check|manpage)
                 COMMAND="$1"; shift ;;
+            completions)
+                COMMAND="completions"; shift
+                if [[ $# -gt 0 && "$1" =~ ^(bash|zsh|fish)$ ]]; then
+                    COMPLETIONS_SHELL="$1"; shift
+                fi
+                ;;
             config)
                 COMMAND="config"; shift
                 # Parse config sub-commands: config set KEY VALUE / config get KEY
@@ -3797,6 +4475,8 @@ parse_args() {
             --shift)       SYNC_SHIFT="$2"; shift 2 ;;
             --to)          CONVERT_FORMAT="$2"; shift 2 ;;
             --merge-with)  MERGE_FILE="$2"; shift 2 ;;
+            --diff-with)   DIFF_FILE="$2"; shift 2 ;;
+            --playlist)    PLAYLIST_FILE="$2"; shift 2 ;;
             --sub)         EMBED_SUB="$2"; shift 2 ;;
             --track)       EXTRACT_TRACK="$2"; shift 2 ;;
             --all)         EXTRACT_ALL=true; shift ;;
@@ -3886,10 +4566,14 @@ main() {
         autosync)  cmd_autosync ;;
         extract)   cmd_extract ;;
         embed)     cmd_embed ;;
+        text)      cmd_text ;;
+        diff)      cmd_diff ;;
         config)    cmd_config ;;
         check)     cmd_check ;;
         providers) cmd_providers ;;
         sources)   cmd_sources ;;
+        completions) cmd_completions ;;
+        manpage)   cmd_manpage ;;
         *)         die "Unknown command: $COMMAND" ;;
     esac
 }

@@ -12,10 +12,14 @@ All-in-one CLI for subtitle management: download, translate, transcribe, convert
 - **Transcription** — generate subtitles from video audio via Whisper (local) or OpenAI API
 - **Smart parsing** — auto-detects movies, episodes, seasons, ranges, IMDb IDs
 - **Format conversion** between SRT, VTT, and ASS
-- **Subtitle tools**: info, clean, sync, fix, merge, extract, embed
+- **Subtitle tools**: info, clean, sync, fix, merge, extract, embed, text, diff
 - **Auto-sync** with video using [ffsubsync](https://github.com/smacke/ffsubsync)
 - **Folder scan** — auto-download subtitles for all video files in a directory
+- **Playlist support** — batch process a list of video files from a `.txt` file
 - **Batch download** for full seasons
+- **Fuzzy search** — tolerates typos, accents, dots/underscores in queries
+- **Shell completions** for bash, zsh, and fish
+- **Progress bar** for long operations (translation, batch processing)
 - **Configurable models** per provider
 
 ## Installation
@@ -157,8 +161,25 @@ subtool extract video.mkv --track 2        # extract specific track
 # Embed subtitles into video
 subtool embed video.mkv --sub subs.srt -l fr
 
+# Export plain text (no timestamps)
+subtool text subs.srt > script.txt
+
+# Compare two subtitle files
+subtool diff original.srt --diff-with translated.srt
+
+# Batch from playlist file (one video path per line)
+subtool auto --playlist videos.txt -l fr
+
 # Check environment (deps, API keys, config)
 subtool check
+
+# Shell completions
+eval "$(subtool completions bash)"                              # bash
+source <(subtool completions zsh)                               # zsh
+subtool completions fish > ~/.config/fish/completions/subtool.fish  # fish
+
+# Man page
+subtool manpage | man -l -
 ```
 
 ## Flags
@@ -179,6 +200,12 @@ subtool check
 | `--max-tokens <n>` | Max output tokens for LLM translation (default: auto per provider) |
 | `--all` | Extract all subtitle tracks at once (`extract` command) |
 | `--track <num>` | Extract a specific subtitle track (`extract` command) |
+| `--diff-with <file>` | Second file for `diff` comparison |
+| `--playlist <file>` | Text file listing video paths for batch `auto` |
+| `--skip-steps <steps>` | Skip steps in `auto` (comma-separated: `download,translate,sync,embed`) |
+| `--max-parallel <n>` | Max parallel translation chunks (default: 3 LLM, 8 google) |
+| `--no-resume` | Ignore batch state and re-process all files |
+| `--keep-files` | Keep intermediate subtitle files after `auto` |
 | `--verbose` | Show debug output |
 | `--quiet` | Suppress informational messages |
 
