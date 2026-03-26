@@ -42,6 +42,10 @@ TRANSLATE_CHUNK_SIZE=""
 MAX_TOKENS=""
 NO_TRANSCRIBE=false
 FORCE_TRANSCRIBE=false
+CLAUDE_EFFORT=""
+SKIP_STEPS=""
+TRANSLATE_MAX_PARALLEL=""
+NO_RESUME=false
 
 # ── Default models ────────────────────────────────────────────────────────────
 MODEL_ZAI_CODEPLAN="glm-4.7"
@@ -51,12 +55,12 @@ MODEL_MISTRAL="mistral-small-latest"
 MODEL_GEMINI="gemini-2.5-flash"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-log()    { { $QUIET && return; printf "${GREEN}[+]${NC} %s\n" "$*"; } || true; }
-warn()   { { $QUIET && return; printf "${YELLOW}[!]${NC} %s\n" "$*"; } || true; }
+log()    { { $QUIET && return; printf "${GREEN}[+]${NC} %s\n" "$*" >&2; } || true; }
+warn()   { { $QUIET && return; printf "${YELLOW}[!]${NC} %s\n" "$*" >&2; } || true; }
 err()    { printf "${RED}[x]${NC} %s\n" "$*" >&2; }
-info()   { { $QUIET && return; printf "${CYAN}[i]${NC} %s\n" "$*"; } || true; }
+info()   { { $QUIET && return; printf "${CYAN}[i]${NC} %s\n" "$*" >&2; } || true; }
 debug()  { $VERBOSE && printf "${BLUE}[D]${NC} %s\n" "$*" >&2 || true; }
-header() { { $QUIET && return; printf "\n${BOLD}${BLUE}── %s ──${NC}\n" "$*"; } || true; }
+header() { { $QUIET && return; printf "\n${BOLD}${BLUE}── %s ──${NC}\n" "$*" >&2; } || true; }
 
 die() { err "$1"; exit 1; }
 
@@ -243,6 +247,12 @@ TRANSLATE_CHUNK_SIZE=""
 
 # Max output tokens for LLM translation — leave empty for auto (based on provider/model)
 MAX_TOKENS=""
+
+# Claude Code effort level (low, medium, high) — leave empty for "low"
+CLAUDE_EFFORT=""
+
+# Max parallel translation chunks — leave empty for defaults (3 LLM, 8 google)
+TRANSLATE_MAX_PARALLEL=""
 CONF
         info "Config created: $CONFIG_FILE"
     fi
@@ -276,6 +286,7 @@ load_config() {
     AI_PROVIDER="${DEFAULT_AI_PROVIDER:-google}"
     TRANSCRIBE_PROVIDER="${DEFAULT_TRANSCRIBE_PROVIDER:-whisper}"
     [[ -z "${WHISPER_MODEL:-}" ]] && WHISPER_MODEL="small"
+    [[ -z "${CLAUDE_EFFORT:-}" ]] && CLAUDE_EFFORT="low"
     # Apply default language from config (CLI -l flag overrides later in parse_args)
     [[ -z "$LANG_TARGET" && -n "${DEFAULT_LANG:-}" ]] && LANG_TARGET="$DEFAULT_LANG" || true
 }
@@ -749,7 +760,7 @@ _max_tokens_for() {
     local provider="$1"
     # User override takes priority
     [[ -n "${MAX_TOKENS:-}" ]] && { echo "$MAX_TOKENS"; return; }
-    # Sensible defaults per provider
+    # Sensible defaults per provider (output tokens for API calls)
     case "$provider" in
         claude)  echo 16384 ;;
         openai)  echo 16384 ;;
@@ -804,7 +815,7 @@ translate_with_google() {
     # Step 2: Split text into chunks and translate in parallel
     local chunk_size="${TRANSLATE_CHUNK_SIZE:-80}"
     local num_chunks=$(( (total_text + chunk_size - 1) / chunk_size ))
-    local max_parallel=8
+    local max_parallel="${TRANSLATE_MAX_PARALLEL:-8}"
     info "$num_chunks chunks (max $max_parallel in parallel)"
 
     # Split text file into chunks
@@ -905,7 +916,8 @@ translate_with_google() {
 translate_with_claude_code() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4"
     local model="${AI_MODEL:-$MODEL_CLAUDE_CODE}"
-    info "Translating with Claude Code ($model, effort low)..."
+    local effort="${CLAUDE_EFFORT:-low}"
+    info "Translating with Claude Code ($model, effort $effort)..."
 
     if ! command -v claude &>/dev/null; then
         err "claude CLI not installed. Install it: npm install -g @anthropic-ai/claude-code"
@@ -919,7 +931,10 @@ translate_with_claude_code() {
 
     local full_input
     full_input=$(printf '%s\n\n%s' "$prompt" "$content")
-    printf '%s' "$full_input" | env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p --model "$model" --effort low --tools "" --no-session-persistence > "$output" 2>/dev/null || {
+    printf '%s' "$full_input" | env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p --model "$model" --effort "$effort" --tools "" --no-session-persistence > "$output" 2>/dev/null || {
+        # claude -p writes errors to stdout, show them before clearing
+        [[ -s "$output" ]] && warn "$(head -3 "$output")"
+        : > "$output"
         err "Claude Code translation failed"
         return 1
     }
@@ -1277,7 +1292,12 @@ translate_subtitle() {
         local total_lines
         total_lines=$(wc -l < "$text_file" | tr -d ' ')
 
-        if [[ $total_lines -le 800 ]]; then
+        # Always send all text in a single call — retry logic handles truncation
+        # Chunking only kicks in for truly massive files (>50k lines, unrealistic for subtitles)
+        local single_call_threshold=50000
+        debug "Single-call mode: $total_lines lines (threshold=$single_call_threshold)" || true
+
+        if [[ $total_lines -le $single_call_threshold ]]; then
             # Single call — translate all text at once
             _translate_dispatch "$text_file" "$text_translated" "$src_lang" "$target_lang" "$provider"
 
@@ -1306,7 +1326,7 @@ translate_subtitle() {
             info "Large file ($total_lines text lines), splitting into chunks..."
             local chunk_size="${TRANSLATE_CHUNK_SIZE:-500}"
             local num_chunks=$(( (total_lines + chunk_size - 1) / chunk_size ))
-            local max_parallel=3
+            local max_parallel="${TRANSLATE_MAX_PARALLEL:-3}"
             info "$num_chunks chunks to translate (max $max_parallel in parallel)"
 
             : > "$text_translated"
@@ -1457,6 +1477,10 @@ ${BOLD}OPTIONS${NC}
     --max-tokens <n>          Max output tokens for LLM translation (default: auto per provider)
     --no-transcribe           Disable transcription fallback in auto mode
     --force-transcribe        Force transcription (skip subtitle download in auto)
+    --claude-effort <level>   Claude Code effort (low [default], medium, high)
+    --skip-steps <steps>      Skip steps in auto (comma-separated: download,translate,sync,embed)
+    --max-parallel <n>        Max parallel translation chunks (default: 3 LLM, 8 google)
+    --no-resume               Ignore batch state and re-process all files in auto directory mode
     --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
     --auto                    Automatically select most downloaded result
     --dry-run                 Display results without downloading
@@ -2309,10 +2333,15 @@ cmd_auto() {
     $AUTO_EMBED && do_embed=true
     [[ "${NO_EMBED:-false}" == "true" ]] && do_embed=false
 
+    # Parse skip-steps into a lookup string
+    local _skip=",$SKIP_STEPS,"
+
     header "subtool auto"
     info "Target language: $target"
+    $DRY_RUN && info "Mode: dry-run (no changes)"
     $do_embed && info "Embed: active" || info "Embed: inactive (ffmpeg required)"
     $FORCE_TRANSCRIBE && info "Transcription: forced (skipping subtitle search)"
+    [[ -n "$SKIP_STEPS" ]] && info "Skip steps: $SKIP_STEPS"
     if $KEEP_FILES; then
         info "Keep files: active (SRT files preserved after embed)"
     elif $do_embed; then
@@ -2320,6 +2349,16 @@ cmd_auto() {
     fi
 
     local success=0 fail=0 skip=0 total=0
+
+    # Batch resume: track completed files in directory mode
+    local batch_state=""
+    if [[ "$mode" == "dir" ]]; then
+        batch_state="${SCAN_DIR}/.subtool_batch_state"
+        if $NO_RESUME && [[ -f "$batch_state" ]]; then
+            rm -f "$batch_state"
+            info "Batch state cleared (--no-resume)"
+        fi
+    fi
 
     # Collect video files
     local video_files=()
@@ -2343,13 +2382,22 @@ cmd_auto() {
 
         local target_srt="${dir_name}/${name_no_ext}.${target}.srt"
 
+        # Batch resume: skip already-completed files
+        if [[ -n "$batch_state" && -f "$batch_state" ]] && grep -qFx "$base_name" "$batch_state" 2>/dev/null; then
+            debug "Batch resume: skipping $base_name (already completed)" || true
+            ((skip++)) || true
+            continue
+        fi
+
         # Already has target language subtitle? (skip only if non-empty)
         if [[ -s "$target_srt" ]]; then
             # Sync + embed even if subtitle already exists
-            _auto_sync "$video_file" "$target_srt" "$target"
-            if $do_embed; then
-                _auto_embed "$video_file" "$target_srt" "$target" && \
-                    _auto_cleanup "$target_srt"
+            if [[ "$_skip" != *",sync,"* ]]; then
+                $DRY_RUN || _auto_sync "$video_file" "$target_srt" "$target"
+            fi
+            if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
+                $DRY_RUN || { _auto_embed "$video_file" "$target_srt" "$target" && \
+                    _auto_cleanup "$target_srt"; }
             fi
             ((skip++)) || true
             continue
@@ -2359,22 +2407,29 @@ cmd_auto() {
 
         local existing_srt="" existing_lang=""
 
-        if $FORCE_TRANSCRIBE; then
+        if $FORCE_TRANSCRIBE || [[ "$_skip" == *",download,"* ]]; then
             # Skip steps 0-2 (download), go straight to transcription
-            debug "Force transcribe: skipping subtitle search" || true
+            $FORCE_TRANSCRIBE && debug "Force transcribe: skipping subtitle search" || true
+            [[ "$_skip" == *",download,"* ]] && debug "Skip step: download" || true
         else
 
         # ── Step 0: Try extracting embedded subtitle in target language ──
         if command -v ffmpeg &>/dev/null && command -v ffprobe &>/dev/null; then
             local embedded_idx
             if embedded_idx=$(_find_subtitle_stream_index "$video_file" "$target"); then
+                if $DRY_RUN; then
+                    info "Would extract embedded subtitle ($target, stream $embedded_idx)"
+                    ((success++)) || true
+                    continue
+                fi
                 if ffmpeg -v error -i "$video_file" -map "0:${embedded_idx}" -c:s srt "$target_srt" -y 2>/dev/null && [[ -s "$target_srt" ]]; then
                     log "Extracted embedded subtitle ($target, stream $embedded_idx): $(basename "$target_srt")"
                     ((success++)) || true
-                    if $do_embed; then
+                    if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
                         _auto_embed "$video_file" "$target_srt" "$target" && \
                             _auto_cleanup "$target_srt"
                     fi
+                    [[ -n "$batch_state" ]] && echo "$base_name" >> "$batch_state"
                     continue
                 fi
             fi
@@ -2417,16 +2472,25 @@ cmd_auto() {
             if results=$(search_all_sources "$PARSED_TITLE" "$target" "$PARSED_IMDB" "$PARSED_SEASON" "$PARSED_EPISODE" 2>/dev/null); then
                 local first
                 first=$(echo "$results" | head -1)
-                if [[ -n "$first" ]] && download_subtitle "$first" "$target_srt" 2>/dev/null; then
-                    log "Downloaded (${target}): $target_srt"
-                    ((success++)) || true
-                    # No translation needed, already in target language
-                    _auto_sync "$video_file" "$target_srt" "$target"
-                    if $do_embed; then
-                        _auto_embed "$video_file" "$target_srt" "$target"
-                        _auto_cleanup "$target_srt"
+                if [[ -n "$first" ]]; then
+                    if $DRY_RUN; then
+                        info "Would download ($target): $(basename "$target_srt")"
+                        info "Would sync + embed"
+                        ((success++)) || true
+                        continue
                     fi
-                    continue
+                    if download_subtitle "$first" "$target_srt" 2>/dev/null; then
+                        log "Downloaded (${target}): $target_srt"
+                        ((success++)) || true
+                        # No translation needed, already in target language
+                        [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
+                        if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
+                            _auto_embed "$video_file" "$target_srt" "$target"
+                            _auto_cleanup "$target_srt"
+                        fi
+                        [[ -n "$batch_state" ]] && echo "$base_name" >> "$batch_state"
+                        continue
+                    fi
                 fi
             fi
 
@@ -2439,19 +2503,27 @@ cmd_auto() {
                 if fb_results=$(search_all_sources "$PARSED_TITLE" "$fl" "$PARSED_IMDB" "$PARSED_SEASON" "$PARSED_EPISODE" 2>/dev/null); then
                     local first
                     first=$(echo "$fb_results" | head -1)
-                    local dl_path="${dir_name}/${name_no_ext}.${fl}.srt"
-                    if [[ -n "$first" ]] && download_subtitle "$first" "$dl_path" 2>/dev/null; then
-                        log "Downloaded ($fl): $(basename "$dl_path")"
-                        existing_srt="$dl_path"
-                        existing_lang="$fl"
-                        break
+                    if [[ -n "$first" ]]; then
+                        if $DRY_RUN; then
+                            info "Would download ($fl) + translate -> $target"
+                            existing_srt="${dir_name}/${name_no_ext}.${fl}.srt"
+                            existing_lang="$fl"
+                            break
+                        fi
+                        local dl_path="${dir_name}/${name_no_ext}.${fl}.srt"
+                        if download_subtitle "$first" "$dl_path" 2>/dev/null; then
+                            log "Downloaded ($fl): $(basename "$dl_path")"
+                            existing_srt="$dl_path"
+                            existing_lang="$fl"
+                            break
+                        fi
                     fi
                 fi
             done
 
             # Nothing found anywhere — prompt for URL in interactive mode
             if [[ -z "$existing_srt" ]]; then
-                if [[ -t 0 ]] && ! $AUTO_SELECT; then
+                if [[ -t 0 ]] && ! $AUTO_SELECT && ! $DRY_RUN; then
                     warn "No subtitles found for: $base_name"
                     printf "  ${CYAN}Paste an opensubtitles.org URL (or Enter to skip):${NC} " >&2
                     local user_url=""
@@ -2484,6 +2556,11 @@ cmd_auto() {
 
         # ── Step 2b: Transcribe from video audio (fallback or forced) ──
         if { [[ -z "$existing_srt" ]] || $FORCE_TRANSCRIBE; } && ! $NO_TRANSCRIBE; then
+            if $DRY_RUN; then
+                info "Would transcribe + translate -> $target"
+                ((success++)) || true
+                continue
+            fi
             if command -v ffmpeg &>/dev/null; then
                 $FORCE_TRANSCRIBE && info "Forced transcription..." || info "No subtitles found — trying transcription..."
                 local transcribed_srt="${CACHE_DIR}/transcribe_auto_$$.srt"
@@ -2501,11 +2578,12 @@ cmd_auto() {
                         mv "$transcribed_srt" "$target_srt"
                         log "Transcribed ($tr_lang): $(basename "$target_srt")"
                         ((success++)) || true
-                        _auto_sync "$video_file" "$target_srt" "$target"
-                        if $do_embed; then
+                        [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
+                        if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
                             _auto_embed "$video_file" "$target_srt" "$target" && \
                                 _auto_cleanup "$target_srt"
                         fi
+                        [[ -n "$batch_state" ]] && echo "$base_name" >> "$batch_state"
                         continue
                     else
                         # Transcribed in different language — pass to translation step
@@ -2522,18 +2600,25 @@ cmd_auto() {
 
         # ── Step 3: Translate if we have a subtitle in another language ──
         if [[ -n "$existing_srt" && "$existing_lang" != "$target" ]]; then
-            info "Translation: $existing_lang -> $target"
-            if translate_subtitle "$existing_srt" "$target_srt" "$existing_lang" "$target" "$AI_PROVIDER"; then
+            if [[ "$_skip" == *",translate,"* ]]; then
+                debug "Skip step: translate" || true
+            elif $DRY_RUN; then
+                info "Would translate $existing_lang -> $target: $(basename "$existing_srt")"
+                info "Would sync + embed"
+                ((success++)) || true
+                continue
+            elif translate_subtitle "$existing_srt" "$target_srt" "$existing_lang" "$target" "$AI_PROVIDER"; then
                 log "Translated: $(basename "$target_srt")"
                 ((success++)) || true
 
                 # ── Step 4: Sync with video ──
-                _auto_sync "$video_file" "$target_srt" "$target"
+                [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
                 # ── Step 5: Embed if requested ──
-                if $do_embed; then
+                if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
                     _auto_embed "$video_file" "$target_srt" "$target" && \
                         _auto_cleanup "$target_srt" "$existing_srt"
                 fi
+                [[ -n "$batch_state" ]] && echo "$base_name" >> "$batch_state"
                 continue
             else
                 warn "Translation failed: $base_name"
@@ -2832,6 +2917,12 @@ _detect_stream_lang() {
 # Helper for auto-embed (embed srt into video, replace original)
 _auto_embed() {
     local video="$1" sub="$2" lang="$3"
+
+    # Validate SRT before embedding to prevent video corruption
+    if ! validate_srt "$sub"; then
+        warn "Invalid SRT format: $(basename "$sub") — skipping embed"
+        return 1
+    fi
 
     # Get existing subtitle stream info
     local streams_json
@@ -3525,6 +3616,10 @@ cmd_embed() {
     [[ ! -f "$FILE_PATH" ]] && die "Video not found: $FILE_PATH"
     [[ ! -f "$EMBED_SUB" ]] && die "Subtitle not found: $EMBED_SUB"
 
+    if ! validate_srt "$EMBED_SUB"; then
+        warn "Invalid SRT format: $EMBED_SUB — run 'subtool fix $EMBED_SUB' first"
+    fi
+
     if ! command -v ffmpeg &>/dev/null; then
         die "ffmpeg required. Install it: brew install ffmpeg"
     fi
@@ -3714,6 +3809,10 @@ parse_args() {
             --max-tokens) MAX_TOKENS="$2"; shift 2 ;;
             --no-transcribe) NO_TRANSCRIBE=true; shift ;;
             --force-transcribe) FORCE_TRANSCRIBE=true; shift ;;
+            --claude-effort) CLAUDE_EFFORT="$2"; shift 2 ;;
+            --skip-steps) SKIP_STEPS="$2"; shift 2 ;;
+            --max-parallel) TRANSLATE_MAX_PARALLEL="$2"; shift 2 ;;
+            --no-resume) NO_RESUME=true; shift ;;
             --keep-files)  KEEP_FILES=true; shift ;;
             --auto)        AUTO_SELECT=true; shift ;;
             --embed)       AUTO_EMBED=true; shift ;;
@@ -3745,8 +3844,17 @@ parse_args() {
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
-    # Remove temp chunk files on exit
+    # Kill child processes (background translation chunks, claude -p, etc.)
+    pkill -P $$ 2>/dev/null || true
+    local pids
+    pids=$(jobs -p 2>/dev/null) || true
+    [[ -n "$pids" ]] && kill $pids 2>/dev/null || true
+    wait 2>/dev/null || true
+    # Remove temp files on exit
     rm -f "$CACHE_DIR"/chunk_*.srt 2>/dev/null || true
+    rm -f "$CACHE_DIR"/text_chunk_*.txt 2>/dev/null || true
+    rm -f "$CACHE_DIR"/translate_*.txt 2>/dev/null || true
+    rm -f "$CACHE_DIR"/claude_err_*.txt 2>/dev/null || true
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -3757,6 +3865,8 @@ main() {
     [[ -z "$COMMAND" ]] && { usage; exit 0; }
 
     mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+    trap 'cleanup; exit 130' INT
+    trap 'cleanup; exit 143' TERM
     trap cleanup EXIT
 
     case "$COMMAND" in

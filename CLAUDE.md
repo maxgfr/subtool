@@ -25,11 +25,11 @@ Search flow: `search_all_sources()` → iterates `SOURCES` (comma-separated) →
 ### Translation Providers
 
 - `google` (default) — uses `translate-shell` (`trans`), Google Translate, no API key. Parallel chunks.
-- `claude-code` — calls `claude -p` CLI (haiku, effort low), no API key needed
+- `claude-code` — calls `claude -p` CLI (haiku by default, effort configurable via `CLAUDE_EFFORT`), no API key needed
 - `zai-codeplan` — Z.ai Coding Plan API
 - `openai`, `claude`, `mistral`, `gemini` — standard chat APIs
 
-Google provider does its own chunking internally (default 80 lines/chunk). LLM providers use text-only extraction + chunking (default 500 lines/chunk). Chunk size configurable via `--chunk-size` or `TRANSLATE_CHUNK_SIZE`. Max output tokens configurable via `--max-tokens` or `MAX_TOKENS` (auto per provider by default via `_max_tokens_for()`). Translation includes retry logic: truncated LLM output auto-retries missing portion, failed chunks retry once before falling back to original text.
+All providers send subtitles in a single API call by default (threshold 50k lines). Chunking only kicks in for truly massive files. Google provider does its own chunking internally (default 80 lines/chunk). Chunk size configurable via `--chunk-size` or `TRANSLATE_CHUNK_SIZE`. Max parallel chunks configurable via `--max-parallel` or `TRANSLATE_MAX_PARALLEL` (default 3 LLM, 8 google). Max output tokens configurable via `--max-tokens` or `MAX_TOKENS` (auto per provider by default via `_max_tokens_for()`). Translation includes retry logic: truncated LLM output auto-retries missing portion, failed chunks retry once before falling back to original text.
 
 ### Transcription Providers
 
@@ -46,7 +46,7 @@ Google provider does its own chunking internally (default 80 lines/chunk). LLM p
 
 ### `auto` command
 
-All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file or directory as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable, `--force-transcribe` to skip download and always transcribe).
+All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file or directory as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable, `--force-transcribe` to skip download and always transcribe). Supports `--dry-run` to preview actions without executing. `--skip-steps download,translate,sync,embed` to skip specific steps. Directory mode tracks completed files in `.subtool_batch_state` for resume on interrupt (`--no-resume` to re-process all).
 
 ### `transcribe` command
 
@@ -103,7 +103,7 @@ Embed an SRT subtitle into a video file. Uses `-map 0 -map 1:0` to preserve all 
 - URL encoding: `urlencode()` via jq
 - Default source: `opensubtitles-org` (podnapisi available via `--sources`)
 - Dependencies: `jq`, `curl`, `translate-shell` (required), `ffmpeg`/`ffprobe` (optional), `ffsubsync` via `uvx` (optional), `whisper` via `uvx` (optional, transcription)
-- Config keys: `DEFAULT_TRANSCRIBE_PROVIDER`, `WHISPER_MODEL`, `OPENAI_WHISPER_API_KEY`, `TRANSLATE_CHUNK_SIZE`, `MAX_TOKENS`
+- Config keys: `DEFAULT_TRANSCRIBE_PROVIDER`, `WHISPER_MODEL`, `OPENAI_WHISPER_API_KEY`, `TRANSLATE_CHUNK_SIZE`, `MAX_TOKENS`, `CLAUDE_EFFORT`, `TRANSLATE_MAX_PARALLEL`
 
 ### Embed/extract subtitle metadata (critical)
 
