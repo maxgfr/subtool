@@ -10,6 +10,8 @@ Single bash script (`subtool.sh`, ~4500 lines) for subtitle management: download
 - **Config**: `~/.config/subtool/config` (API keys, `DEFAULT_LANG`, defaults)
 - **Cache**: `~/.cache/subtool/` (temp files, chunks)
 - **Tests**: `tests/run_tests.sh` + `tests/fixtures/`
+  - The test script uses `$TMP_DIR` (with underscore) for its temp directory — never use `$TMPDIR`
+  - **Always run `./tests/run_tests.sh` after any change** to verify nothing is broken before committing
 
 ## Key Subsystems
 

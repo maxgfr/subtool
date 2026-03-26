@@ -1946,7 +1946,7 @@ assert_output_contains "help: --playlist" "$out" "\-\-playlist"
 # ══════════════════════════════════════════════════════════════════════════════
 section "Text: export plain text"
 
-text_out="$TMPDIR/text_output.txt"
+text_out="$TMP_DIR/text_output.txt"
 "$SUBSYNC" text "$FIXTURES/basic.srt" > "$text_out" 2>/dev/null
 assert_file_exists "text: file created" "$text_out"
 assert_file_contains "text: has dialogue" "$text_out" "Willkommen"
@@ -2016,7 +2016,7 @@ assert_output_contains "fuzzy: normalizes dots/underscores" "$out" "Fuzzy-normal
 section "Playlist: batch file support"
 
 # Create a temporary playlist file
-playlist_file="$TMPDIR/test_playlist.txt"
+playlist_file="$TMP_DIR/test_playlist.txt"
 printf "# Comment line\n/nonexistent/video1.mkv\n\n/nonexistent/video2.mp4\n" > "$playlist_file"
 
 # Test that playlist is recognized (will warn about missing files but not crash)
