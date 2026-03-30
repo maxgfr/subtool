@@ -12,7 +12,8 @@ All-in-one CLI for subtitle management: download, translate, transcribe, convert
 - **Transcription** — generate subtitles from video audio via Whisper (local) or OpenAI API
 - **Smart parsing** — auto-detects movies, episodes, seasons, ranges, IMDb IDs
 - **Format conversion** between SRT, VTT, and ASS
-- **Subtitle tools**: info, clean, sync, fix, merge, extract, embed, text, diff
+- **Language learning mix** — dual-language subtitles (learning language bold, native in grey italic)
+- **Subtitle tools**: info, clean, sync, fix, merge, mix, extract, embed, text, diff
 - **Auto-sync** with video using [ffsubsync](https://github.com/smacke/ffsubsync)
 - **Folder scan** — auto-download subtitles for all video files in a directory
 - **Playlist support** — batch process a list of video files from a `.txt` file
@@ -100,6 +101,8 @@ subtool auto ~/Movies/Die.Discounter -l fr               # all-in-one (Google Tr
 subtool auto ~/Movies/Die.Discounter -l fr -p claude-code # use Claude for translation
 subtool auto ~/Movies/Die.Discounter -l fr -p openai      # use OpenAI for translation
 subtool auto movie.mkv -l fr                              # single file
+subtool auto movie.mkv -l fr --mix                        # dual-language: source + FR
+subtool auto movie.mkv -l fr --mix-lang de                # dual-language: DE (top) + FR (bottom)
 subtool auto ~/Movies/Die.Discounter -l en,fr             # multi-language
 subtool auto ~/Movies/Die.Discounter -l fr --no-embed     # skip embed
 subtool auto movie.mkv -l fr --force-transcribe           # skip download, always transcribe
@@ -149,6 +152,10 @@ subtool convert subs.ass --to srt
 
 # Merge bilingual subtitles
 subtool merge primary.srt --merge-with secondary.srt
+
+# Mix subtitles for language learning
+subtool mix movie.de.srt --mix-with movie.fr.srt          # from two files
+subtool mix movie.de.srt -l fr                            # translate + mix
 
 # Fix broken subtitles (renumber, fix overlaps, sort by timestamp, UTF-8)
 subtool fix broken.srt
@@ -200,9 +207,12 @@ subtool manpage | man -l -
 | `--max-tokens <n>` | Max output tokens for LLM translation (default: auto per provider) |
 | `--all` | Extract all subtitle tracks at once (`extract` command) |
 | `--track <num>` | Extract a specific subtitle track (`extract` command) |
+| `--mix` | Enable dual-language mix in `auto` mode |
+| `--mix-with <file>` | Second file for `mix` (dual-language subtitles) |
+| `--mix-lang <lang>` | Learning language for mix top (implies `--mix`) |
 | `--diff-with <file>` | Second file for `diff` comparison |
 | `--playlist <file>` | Text file listing video paths for batch `auto` |
-| `--skip-steps <steps>` | Skip steps in `auto` (comma-separated: `download,translate,sync,embed`) |
+| `--skip-steps <steps>` | Skip steps in `auto` (comma-separated: `download,translate,sync,mix,embed`) |
 | `--max-parallel <n>` | Max parallel translation chunks (default: 3 LLM, 8 google) |
 | `--no-resume` | Ignore batch state and re-process all files |
 | `--keep-files` | Keep intermediate subtitle files after `auto` |

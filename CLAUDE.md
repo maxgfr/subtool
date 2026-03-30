@@ -44,11 +44,13 @@ All providers send subtitles in a single API call by default (threshold 50k line
 
 ## Commands
 
-`get`, `search`, `batch`, `scan`, `auto`, `transcribe`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `fix`, `extract`, `embed`, `text`, `diff`, `config`, `check`, `providers`, `sources`, `completions`, `manpage`
+`get`, `search`, `batch`, `scan`, `auto`, `transcribe`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `mix`, `fix`, `extract`, `embed`, `text`, `diff`, `config`, `check`, `providers`, `sources`, `completions`, `manpage`
 
 ### `auto` command
 
-All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file, directory, or playlist (.txt) as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable, `--force-transcribe` to skip download and always transcribe). Supports `--dry-run` to preview actions without executing. `--skip-steps download,translate,sync,embed` to skip specific steps. Directory mode tracks completed files in `.subtool_batch_state` for resume on interrupt (`--no-resume` to re-process all). Playlist mode (`--playlist file.txt` or auto-detected from `.txt` extension): reads one video path per line (comments with `#`, blank lines ignored, relative paths resolved from playlist directory).
+All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file, directory, or playlist (.txt) as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable, `--force-transcribe` to skip download and always transcribe). Supports `--dry-run` to preview actions without executing. `--skip-steps download,translate,sync,mix,embed` to skip specific steps. Directory mode tracks completed files in `.subtool_batch_state` for resume on interrupt (`--no-resume` to re-process all). Playlist mode (`--playlist file.txt` or auto-detected from `.txt` extension): reads one video path per line (comments with `#`, blank lines ignored, relative paths resolved from playlist directory).
+
+Supports `--mix` to create dual-language subtitles for language learning: source language in bold on top, target language in grey italic below. Output: `.mix.srt`. Use `--mix-lang <lang>` to specify the learning language explicitly. In the translate path, sync happens on `target_srt` first (identical to without --mix), then the mix inherits synced timestamps via swap mode — no second sync needed. Track title is set to "Mix German-French" (etc.) when embedding.
 
 ### `transcribe` command
 
@@ -61,6 +63,16 @@ Extract subtitle tracks from a video file (MKV, MP4, etc.). Supports `--track <n
 ### `embed` command
 
 Embed an SRT subtitle into a video file. Uses `-map 0 -map 1:0` to preserve all existing streams. Properly sets `language` and `title` metadata on the new subtitle stream AND re-sets metadata on all existing subtitle streams (prevents "piste 1/2" generic labels in players).
+
+### `mix` command
+
+Mix two subtitle files into one dual-language file for language learning. Learning language displayed in bold (top), native language in grey italic (bottom). Output: `.mix.srt`.
+
+Two modes:
+- `subtool mix movie.de.srt --mix-with movie.fr.srt` — from two existing files
+- `subtool mix movie.de.srt -l fr` — translate first, then mix
+
+In `auto` mode: `--mix` enables dual-language output, `--mix-lang <lang>` specifies the learning language. The `_auto_mix()` helper finds a source subtitle (Priority: 1. existing_srt from translate path, 2. `--mix-lang` specific file, 3. scan for any `.XX.srt`). Skips `.mix.srt` files from previous runs.
 
 ### `text` command
 
@@ -85,6 +97,9 @@ Generate a man page in troff format. Usage: `subtool manpage | man -l -`.
 - `--auto` — auto-select most downloaded result (skip interactive prompt)
 - `--embed` / `--no-embed` — force/disable subtitle embedding (auto: on by default)
 - `--url <url>` — provide a subtitle URL directly
+- `--mix-with <file>` — second file for `mix` command
+- `--mix` — enable dual-language mix in `auto` mode
+- `--mix-lang <lang>` — learning language for mix (implies `--mix`)
 - `--diff-with <file>` — second file for `diff` command
 - `--playlist <file>` — text file listing video paths for batch `auto`
 - `--dry-run` — show results without downloading
@@ -108,6 +123,8 @@ Generate a man page in troff format. Usage: `subtool manpage | man -l -`.
 - `_detect_stream_lang()` — extracts a text sample from an embedded subtitle stream and auto-detects its language via `detect_lang()`. Used when stream has `language=und`
 - `progress()` — visual progress bar for long operations (translation chunks, batch processing)
 - `_fuzzy_normalize()` — strips accents (via `iconv`), collapses separators, removes punctuation for typo-tolerant search
+- `_mix_subtitles()` — merges two SRT files into one bilingual (supports swap mode for timestamp source)
+- `_auto_mix()` — finds source subtitle + mixes with target in auto flow. Returns `lang|path` on stdout
 
 ## CI/CD
 

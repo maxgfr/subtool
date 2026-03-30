@@ -1295,6 +1295,202 @@ assert_file_contains "merge mismatched: primary text preserved" "$merged" "Willk
 assert_file_contains "merge mismatched: secondary text present" "$merged" "Only two blocks"
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "mix"
+
+"$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1
+out_file="$TMP_DIR/basic.mix.srt"
+assert_file_exists "mix: file created" "$out_file"
+# Primary file (DE) should be on top (learning language), --mix-with (FR) in italic (reference)
+assert_file_contains "mix: original text (DE) on top" "$out_file" "Willkommen"
+assert_file_contains "mix: translated text (FR) in italic" "$out_file" "<i>Bienvenue"
+assert_file_contains "mix: timestamps preserved" "$out_file" "00:00:01,000 --> 00:00:03,500"
+# DE text must NOT be wrapped in italic
+if grep -q "<i>Willkommen" "$out_file"; then
+    assert "mix: DE text is not italic" 1
+else
+    assert "mix: DE text is not italic" 0
+fi
+
+# Verify each block has both languages
+de_count=$(grep -c "Willkommen\|Regale\|Pause\|Discounter\|Angebote" "$out_file" || true)
+fr_count=$(grep -c "Bienvenue\|rayons\|pause\|discounter\|offres" "$out_file" || true)
+if [[ "$de_count" -gt 0 && "$fr_count" -gt 0 ]]; then
+    assert "mix: both languages present" 0
+else
+    assert "mix: both languages present" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "mix edge cases"
+
+# Mix files with different subtitle counts (secondary shorter)
+short_mix="$TMP_DIR/short_mix.srt"
+cat > "$short_mix" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,500
+Only one block here.
+EOF
+"$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$short_mix" -o "$TMP_DIR" 2>&1 >/dev/null
+mixed="$TMP_DIR/basic.mix.srt"
+if [[ -f "$mixed" ]]; then
+    # Primary (DE) on top, secondary (short_mix) in italic
+    assert_file_contains "mix mismatched: primary text preserved" "$mixed" "Willkommen"
+    assert_file_contains "mix mismatched: secondary text present" "$mixed" "Only one block"
+    # Blocks without a secondary should still have primary text
+    assert_file_contains "mix mismatched: later primary blocks preserved" "$mixed" "Angebote"
+else
+    assert "mix mismatched: output file found" 1
+fi
+
+# Mix with filenames that have lang codes
+cp "$FIXTURES/basic.srt" "$TMP_DIR/episode.de.srt"
+cp "$FIXTURES/basic_fr.srt" "$TMP_DIR/episode.fr.srt"
+"$SUBSYNC" mix "$TMP_DIR/episode.de.srt" --mix-with "$TMP_DIR/episode.fr.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+assert_file_exists "mix lang codes: output is .mix.srt" "$TMP_DIR/episode.mix.srt"
+
+# Verify display order: DE (primary/learning) on top, FR (reference) in italic
+if [[ -f "$TMP_DIR/episode.mix.srt" ]]; then
+    assert_file_contains "mix lang codes: DE on top" "$TMP_DIR/episode.mix.srt" "Willkommen"
+    assert_file_contains "mix lang codes: FR in italic" "$TMP_DIR/episode.mix.srt" "<i>Bienvenue"
+    if grep -q "<i>Willkommen" "$TMP_DIR/episode.mix.srt"; then
+        assert "mix lang codes: DE not italic" 1
+    else
+        assert "mix lang codes: DE not italic" 0
+    fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "mix swap mode"
+
+# Swap mode: primary timestamps, but secondary text on top
+# Use basic.srt (DE) as primary (timestamp source), basic_fr.srt as secondary
+# With swap=false (default): DE on top, FR in italic (tested above)
+# Here we test the underlying _mix_subtitles swap via cmd_mix argument order
+# Create a reversed mix: FR as primary, DE as --mix-with → FR on top, DE in italic
+"$SUBSYNC" mix "$FIXTURES/basic_fr.srt" --mix-with "$FIXTURES/basic.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+swapped="$TMP_DIR/basic_fr.mix.srt"
+if [[ -f "$swapped" ]]; then
+    # Now FR (primary) should be on top, DE (secondary) in italic
+    assert_file_contains "mix reversed: FR on top" "$swapped" "Bienvenue"
+    assert_file_contains "mix reversed: DE in italic" "$swapped" "<i>Willkommen"
+    if grep -q "<i>Bienvenue" "$swapped"; then
+        assert "mix reversed: FR not italic" 1
+    else
+        assert "mix reversed: FR not italic" 0
+    fi
+else
+    assert "mix reversed: output file found" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "mix backslash handling"
+
+# Subtitle text containing backslashes should be preserved (not interpreted as escape sequences)
+backslash_srt="$TMP_DIR/backslash.srt"
+cat > "$backslash_srt" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,500
+path\next line test
+
+2
+00:00:04,000 --> 00:00:06,000
+C:\new\test folder
+EOF
+"$SUBSYNC" mix "$backslash_srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+bs_mixed="$TMP_DIR/backslash.mix.srt"
+if [[ -f "$bs_mixed" ]]; then
+    # The \n and \t in the text should be preserved literally, not interpreted as newlines/tabs
+    assert_file_contains "mix backslash: literal backslash-n preserved" "$bs_mixed" 'path\\next'
+    assert_file_contains "mix backslash: literal backslash-t preserved" "$bs_mixed" 'C:\\new\\test'
+else
+    assert "mix backslash: output file found" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "mix pipe character in text"
+
+# Subtitle text containing pipe characters should be preserved
+pipe_srt="$TMP_DIR/pipe.srt"
+cat > "$pipe_srt" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,500
+Yes | No | Maybe
+
+2
+00:00:04,000 --> 00:00:06,000
+A | B
+EOF
+"$SUBSYNC" mix "$pipe_srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+pipe_mixed="$TMP_DIR/pipe.mix.srt"
+if [[ -f "$pipe_mixed" ]]; then
+    assert_file_contains "mix pipe: pipe chars preserved in text" "$pipe_mixed" "Yes | No | Maybe"
+    assert_file_contains "mix pipe: second block pipe preserved" "$pipe_mixed" "A | B"
+else
+    assert "mix pipe: output file found" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "mix secondary longer than primary"
+
+# When secondary has more blocks than primary, secondary-only blocks should use secondary timestamps
+short_pri="$TMP_DIR/short_pri.srt"
+cat > "$short_pri" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,500
+Only primary block
+EOF
+"$SUBSYNC" mix "$short_pri" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+sec_longer="$TMP_DIR/short_pri.mix.srt"
+if [[ -f "$sec_longer" ]]; then
+    # First block: primary on top, secondary (FR) in italic
+    assert_file_contains "mix sec-longer: primary text on top" "$sec_longer" "Only primary block"
+    assert_file_contains "mix sec-longer: secondary in italic" "$sec_longer" "<i>Bienvenue"
+    # Later blocks: should be italic-only (secondary has more blocks)
+    block_count=$(grep -c "^[0-9]\+$" "$sec_longer" || true)
+    if [[ "$block_count" -gt 1 ]]; then
+        assert "mix sec-longer: secondary-only blocks preserved" 0
+    else
+        assert "mix sec-longer: secondary-only blocks preserved" 1
+    fi
+else
+    assert "mix sec-longer: output file found" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "merge secondary longer than primary"
+
+# merge should also handle secondary having more blocks
+"$SUBSYNC" merge "$short_pri" --merge-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+merge_longer="$TMP_DIR/short_pri.dual.srt"
+if [[ -f "$merge_longer" ]]; then
+    assert_file_contains "merge sec-longer: primary text preserved" "$merge_longer" "Only primary block"
+    merge_block_count=$(grep -c "^[0-9]\+$" "$merge_longer" || true)
+    if [[ "$merge_block_count" -gt 1 ]]; then
+        assert "merge sec-longer: secondary-only blocks preserved" 0
+    else
+        assert "merge sec-longer: secondary-only blocks preserved" 1
+    fi
+else
+    assert "merge sec-longer: output file found" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "merge BOM handling"
+
+# BOM-encoded file should be handled correctly
+bom_srt="$TMP_DIR/bom.srt"
+printf '\xef\xbb\xbf1\n00:00:01,000 --> 00:00:03,500\nBOM text\n\n' > "$bom_srt"
+"$SUBSYNC" merge "$bom_srt" --merge-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+bom_merged="$TMP_DIR/bom.dual.srt"
+if [[ -f "$bom_merged" ]]; then
+    assert_file_contains "merge BOM: text preserved" "$bom_merged" "BOM text"
+    # Timestamps should not have BOM bytes
+    assert_file_contains "merge BOM: clean timestamps" "$bom_merged" "00:00:01,000 --> 00:00:03,500"
+else
+    assert "merge BOM: output file found" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "error messages"
 
 # embed without --sub
@@ -1308,6 +1504,10 @@ assert_output_contains "autosync no --ref: error message" "$out" "Specify.*--ref
 # merge without --merge-with
 out=$("$SUBSYNC" merge "$FIXTURES/basic.srt" 2>&1 || true)
 assert_output_contains "merge no --merge-with: error message" "$out" "Specify.*--merge"
+
+# mix without --mix-with and without -l
+out=$("$SUBSYNC" mix "$FIXTURES/basic.srt" 2>&1 || true)
+assert_output_contains "mix no --mix-with no -l: error message" "$out" "Specify.*--mix-with.*-l"
 
 # sync without --shift
 out=$("$SUBSYNC" sync "$FIXTURES/basic.srt" 2>&1 || true)
@@ -1939,6 +2139,10 @@ assert_output_contains "help: diff command" "$out" "diff.*Compare two subtitle"
 assert_output_contains "help: completions" "$out" "completions.*Generate shell completions"
 assert_output_contains "help: manpage" "$out" "manpage.*Generate man page"
 assert_output_contains "help: --diff-with" "$out" "\-\-diff-with"
+assert_output_contains "help: --mix-with" "$out" "\-\-mix-with"
+assert_output_contains "help: --mix" "$out" "\-\-mix"
+assert_output_contains "help: --mix-lang" "$out" "\-\-mix-lang"
+assert_output_contains "help: mix command" "$out" "mix.*Mix.*language"
 assert_output_contains "help: --playlist" "$out" "\-\-playlist"
 
 # ══════════════════════════════════════════════════════════════════════════════
