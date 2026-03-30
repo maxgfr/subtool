@@ -2900,8 +2900,8 @@ _auto_mix() {
 
     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
     info "Mixing: $mix_lang (top) + $target (bottom, italic)"
-    # mix_source (learning/source language) on top, target_srt (translated) in italic below
-    _mix_subtitles "$mix_source" "$target_srt" "$mix_output"
+    # target_srt as primary (reference timestamps), swap puts mix_source text on top
+    _mix_subtitles "$target_srt" "$mix_source" "$mix_output" true
     log "Mixed: $(basename "$mix_output")"
     # Output lang|path so caller can parse both (avoids subshell variable loss)
     echo "${mix_lang}|${mix_output}"
@@ -3850,8 +3850,8 @@ cmd_mix() {
     info "Top (learning):  $(basename "$primary") [$lang1]"
     info "Bottom (reference, italic): $(basename "$secondary") [$lang2]"
 
-    # Primary (learning language) on top, secondary (reference/translated) in italic below
-    _mix_subtitles "$primary" "$secondary" "$output"
+    # Secondary as primary arg (preserves its timestamps), swap puts primary text on top
+    _mix_subtitles "$secondary" "$primary" "$output" true
 
     log "Mixed file: $output"
 }

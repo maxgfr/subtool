@@ -124,7 +124,7 @@ Generate a man page in troff format. Usage: `subtool manpage | man -l -`.
 - `progress()` — visual progress bar for long operations (translation chunks, batch processing)
 - `_fuzzy_normalize()` — strips accents (via `iconv`), collapses separators, removes punctuation for typo-tolerant search
 - `_mix_subtitles()` — merges two SRT files into one bilingual (supports swap mode for timestamp source)
-- `_auto_mix()` — finds source subtitle + mixes with target in auto flow. Returns `lang|path` on stdout
+- `_auto_mix()` — finds source subtitle + mixes with target in auto flow. Uses swap mode (target_srt timestamps, source text on top). Returns `lang|path` on stdout
 
 ## CI/CD
 

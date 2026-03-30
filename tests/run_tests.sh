@@ -1383,6 +1383,57 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "mix timestamp source"
+
+# When files have DIFFERENT timestamps, mix must use --mix-with timestamps (not primary)
+# This is critical: primary text on top, but timestamps from --mix-with (secondary arg)
+ts_pri="$TMP_DIR/ts_primary.de.srt"
+ts_sec="$TMP_DIR/ts_secondary.fr.srt"
+cat > "$ts_pri" << 'EOF'
+1
+00:00:10,000 --> 00:00:13,000
+Hallo Welt
+
+2
+00:00:20,000 --> 00:00:23,000
+Guten Tag
+EOF
+cat > "$ts_sec" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,000
+Bonjour le monde
+
+2
+00:00:05,000 --> 00:00:07,000
+Bonne journee
+EOF
+
+"$SUBSYNC" mix "$ts_pri" --mix-with "$ts_sec" -o "$TMP_DIR" 2>&1 >/dev/null
+ts_out="$TMP_DIR/ts_primary.mix.srt"
+if [[ -f "$ts_out" ]]; then
+    # Timestamps should come from --mix-with file (FR: 01,000 and 05,000), NOT primary (DE: 10,000 and 20,000)
+    assert_file_contains "mix timestamps: uses --mix-with timing (block 1)" "$ts_out" "00:00:01,000 --> 00:00:03,000"
+    assert_file_contains "mix timestamps: uses --mix-with timing (block 2)" "$ts_out" "00:00:05,000 --> 00:00:07,000"
+    # Primary text (DE) should be on top, not italic
+    assert_file_contains "mix timestamps: DE text on top" "$ts_out" "Hallo Welt"
+    if grep -q "<i>Hallo" "$ts_out"; then
+        assert "mix timestamps: DE not italic" 1
+    else
+        assert "mix timestamps: DE not italic" 0
+    fi
+    # --mix-with text (FR) should be in italic
+    assert_file_contains "mix timestamps: FR text in italic" "$ts_out" "<i>Bonjour"
+    # Must NOT have primary timestamps
+    if grep -q "00:00:10,000" "$ts_out"; then
+        assert "mix timestamps: no primary timing leak" 1
+    else
+        assert "mix timestamps: no primary timing leak" 0
+    fi
+else
+    assert "mix timestamps: output file found" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "mix backslash handling"
 
 # Subtitle text containing backslashes should be preserved (not interpreted as escape sequences)
