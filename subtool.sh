@@ -3603,7 +3603,7 @@ cmd_merge() {
     # Parse SRT: output "START|END|TEXT" per block (0x1F as line separator)
     _parse_srt_blocks() {
         sed '1s/^\xef\xbb\xbf//' "$1" | tr -d '\r' | awk '
-        BEGIN { state = "init"; start = ""; end_ts = ""; txt = ""; SEP = sprintf("%c", 31) }
+        BEGIN { state = "init"; start = ""; end_ts = ""; txt = ""; SEP = "<_NL_>" }
         function flush() {
             if (start == "" || txt == "") { start = ""; end_ts = ""; txt = ""; return }
             printf "%s|%s|%s\n", start, end_ts, txt
@@ -3660,9 +3660,9 @@ cmd_merge() {
             fi
         fi
 
-        # Convert Unit Separator (0x1F) back to real newlines
-        text="${text//$'\x1f'/$'\n'}"
-        sec_text="${sec_text//$'\x1f'/$'\n'}"
+        # Convert sentinel back to real newlines
+        text="${text//<_NL_>/$'\n'}"
+        sec_text="${sec_text//<_NL_>/$'\n'}"
 
         if [[ -n "$text" && -n "$sec_text" ]]; then
             printf '%d\n%s --> %s\n%s\n<i>%s</i>\n\n' "$idx" "$start" "$end_ts" "$text" "$sec_text" >> "$output"
@@ -3693,7 +3693,7 @@ _mix_subtitles() {
     # Parse SRT: output "START|END|TEXT" per block (text newlines as \n literal)
     _mix_parse_srt() {
         sed '1s/^\xef\xbb\xbf//' "$1" | tr -d '\r' | awk '
-        BEGIN { state = "init"; start = ""; end_ts = ""; txt = ""; SEP = sprintf("%c", 31) }
+        BEGIN { state = "init"; start = ""; end_ts = ""; txt = ""; SEP = "<_NL_>" }
         function flush() {
             if (start == "" || txt == "") { start = ""; end_ts = ""; txt = ""; return }
             printf "%s|%s|%s\n", start, end_ts, txt
@@ -3750,9 +3750,9 @@ _mix_subtitles() {
             fi
         fi
 
-        # Convert Unit Separator (0x1F) back to real newlines
-        text="${text//$'\x1f'/$'\n'}"
-        sec_text="${sec_text//$'\x1f'/$'\n'}"
+        # Convert sentinel back to real newlines
+        text="${text//<_NL_>/$'\n'}"
+        sec_text="${sec_text//<_NL_>/$'\n'}"
 
         # Determine display order: top_text (normal) + bottom_text (italic)
         local top_text="$text" bottom_text="$sec_text"
