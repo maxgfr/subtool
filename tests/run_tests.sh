@@ -1297,7 +1297,15 @@ assert_file_contains "merge mismatched: secondary text present" "$merged" "Only 
 # ══════════════════════════════════════════════════════════════════════════════
 section "mix"
 
-"$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1
+if ! "$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1; then
+    echo "ERROR: mix command failed with exit code $?" >&2
+    echo "BASH_VERSION=$BASH_VERSION" >&2
+    echo "AWK=$(awk --version 2>&1 | head -1 || awk -W version 2>&1 | head -1 || echo unknown)" >&2
+    # Try running _mix_subtitles steps manually to find the failing line
+    echo "--- Trying parse step ---" >&2
+    "$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" --verbose 2>&1 || true
+    assert "mix: command succeeded" 1
+fi
 out_file="$TMP_DIR/basic.mix.srt"
 assert_file_exists "mix: file created" "$out_file"
 # Primary file (DE) should be on top (learning language), --mix-with (FR) in italic (reference)
