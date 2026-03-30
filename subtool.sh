@@ -211,6 +211,7 @@ _detect_lang_offline() {
     done
 
     [[ $best_score -ge 3 ]] && echo "$best_lang"
+    return 0
 }
 
 # Validate SRT format (returns 0 if valid, 1 if broken)

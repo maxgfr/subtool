@@ -1297,11 +1297,7 @@ assert_file_contains "merge mismatched: secondary text present" "$merged" "Only 
 # ══════════════════════════════════════════════════════════════════════════════
 section "mix"
 
-if ! "$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1; then
-    echo "=== MIX FAILED — bash -x trace (last 80 lines) ===" >&2
-    bash -x "$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 | tail -80 || true
-    assert "mix: command succeeded" 1
-fi
+"$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1
 out_file="$TMP_DIR/basic.mix.srt"
 assert_file_exists "mix: file created" "$out_file"
 # Primary file (DE) should be on top (learning language), --mix-with (FR) in italic (reference)
