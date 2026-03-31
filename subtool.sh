@@ -1522,6 +1522,7 @@ ${BOLD}COMMANDS${NC}
     fix         Repair an SRT (UTF-8 encoding, sorting, renumbering, overlaps)
     extract     Extract subtitles from a video (MKV, MP4)
     embed       Embed an SRT into a video
+    strip       Remove all subtitle tracks from a video
     text        Export plain text from subtitle (no timestamps)
     diff        Compare two subtitle files side by side
     config      Display/edit configuration (config set <KEY> <VALUE>)
@@ -1627,6 +1628,7 @@ ${BOLD}EXAMPLES${NC}
     $SCRIPT_NAME extract movie.mkv --all
     $SCRIPT_NAME extract movie.mkv --track 2
     $SCRIPT_NAME embed movie.mkv --sub movie.fr.srt -l fr
+    $SCRIPT_NAME strip movie.mkv                            # remove all subtitle tracks
 
     # Transcribe (generate subtitles from audio)
     $SCRIPT_NAME transcribe movie.mkv
@@ -2794,12 +2796,16 @@ cmd_auto() {
 
                 # ── Step 4: Sync target_srt (same as without --mix) ──
                 [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
+                # ── Step 4a: Also sync existing_srt so both drop the same blocks ──
+                if $MIX_MODE && [[ "$_skip" != *",sync,"* ]]; then
+                    _auto_sync "$video_file" "$existing_srt" "$existing_lang"
+                fi
                 # ── Step 4b: Mix using SYNCED target_srt timestamps ──
                 local embed_srt="$target_srt" embed_title=""
                 if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
                     local src_lang="${existing_lang:-}"
-                    # target_srt has synced timestamps (primary), swap puts existing_srt (source) on top
+                    # Both files synced: same block count, matching timestamps
                     info "Mixing: $src_lang (top) + $target (bottom, italic)"
                     _mix_subtitles "$target_srt" "$existing_srt" "$mix_output" true
                     log "Mixed: $(basename "$mix_output")"
@@ -2899,9 +2905,12 @@ _auto_mix() {
         return 1
     fi
 
+    # Sync mix_source so both files drop the same blocks (ffsubsync may skip negative timestamps)
+    _auto_sync "$video" "$mix_source" "$mix_lang" 2>/dev/null
+
     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
     info "Mixing: $mix_lang (top) + $target (bottom, italic)"
-    # target_srt as primary (reference timestamps), swap puts mix_source text on top
+    # Both files synced: same block alignment, target_srt timestamps as reference
     _mix_subtitles "$target_srt" "$mix_source" "$mix_output" true
     log "Mixed: $(basename "$mix_output")"
     # Output lang|path so caller can parse both (avoids subshell variable loss)
@@ -4249,6 +4258,59 @@ cmd_embed() {
     fi
 }
 
+# ── Command: strip (remove subtitle tracks from video) ───────────────────────
+cmd_strip() {
+    [[ -z "$FILE_PATH" ]] && die "Specify a video file (e.g., subtool $COMMAND video.mkv)"
+    [[ ! -f "$FILE_PATH" ]] && die "Video not found: $FILE_PATH"
+
+    if ! command -v ffmpeg &>/dev/null || ! command -v ffprobe &>/dev/null; then
+        die "ffmpeg/ffprobe required. Install: brew install ffmpeg"
+    fi
+
+    # Verify it's a video file (has video or audio streams)
+    local va_count
+    va_count=$(ffprobe -v quiet -print_format json -show_streams -select_streams V "$FILE_PATH" 2>/dev/null | jq '.streams | length' 2>/dev/null || echo "0")
+    [[ "$va_count" == "0" ]] && die "Not a video file: $(basename "$FILE_PATH")"
+
+    # Check existing subtitle streams
+    local streams_json sub_count
+    streams_json=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$FILE_PATH" 2>/dev/null)
+    sub_count=$(echo "$streams_json" | jq '.streams | length' 2>/dev/null || echo "0")
+
+    if [[ "$sub_count" == "0" || -z "$sub_count" ]]; then
+        info "No subtitle tracks found in $(basename "$FILE_PATH")"
+        return 0
+    fi
+
+    header "Strip subtitles"
+    info "Video: $(basename "$FILE_PATH")"
+    info "Removing $sub_count subtitle track(s):"
+
+    local sidx
+    for ((sidx=0; sidx<sub_count; sidx++)); do
+        local s_lang s_title s_codec
+        s_lang=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.language // \"und\"")
+        s_title=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.title // \"\"")
+        s_codec=$(echo "$streams_json" | jq -r ".streams[$sidx].codec_name // \"?\"")
+        local display="$s_title"
+        [[ -z "$display" ]] && display=$(_lang_title "$s_lang")
+        printf "  ${BOLD}%2d${NC}) [${CYAN}%s${NC}] %s (%s)\n" "$sidx" "$s_lang" "$display" "$s_codec" >&2
+    done
+
+    local base_name ext output
+    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+    ext="${FILE_PATH##*.}"
+    output="${OUTPUT_DIR}/${base_name}.clean.${ext}"
+
+    # Copy all streams EXCEPT subtitles
+    if ffmpeg -v quiet -i "$FILE_PATH" -map 0 -map -0:s -c copy "$output" -y 2>/dev/null && [[ -s "$output" ]]; then
+        log "Cleaned video (no subtitles): $output"
+    else
+        err "Strip failed"
+        return 1
+    fi
+}
+
 # ── Command: autosync (ffsubsync - auto sync with video/audio) ───────────────
 AUTOSYNC_REF=""
 AUTOSYNC_REF_STREAM=""
@@ -4333,7 +4395,7 @@ COMPLETIONS_SHELL=""
 
 cmd_completions() {
     local shell="${COMPLETIONS_SHELL:-bash}"
-    local commands="auto transcribe get search batch translate info clean sync autosync convert merge mix fix extract embed text diff config check providers sources completions manpage"
+    local commands="auto transcribe get search batch translate info clean sync autosync convert merge mix fix extract embed strip text diff config check providers sources completions manpage"
     local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --no-resume --keep-files --mix --mix-lang --auto --dry-run --json --verbose --quiet -h --help -v --version"
 
     case "$shell" in
@@ -4399,6 +4461,7 @@ _subtool() {
         'fix:Repair an SRT'
         'extract:Extract subtitles from video'
         'embed:Embed an SRT into video'
+        'strip:Remove all subtitle tracks from video'
         'text:Export plain text from subtitle'
         'diff:Compare two subtitle files'
         'config:Display/edit configuration'
@@ -4500,6 +4563,7 @@ complete -c subtool -n __fish_use_subcommand -a mix -d 'Mix subtitles for langua
 complete -c subtool -n __fish_use_subcommand -a fix -d 'Repair an SRT'
 complete -c subtool -n __fish_use_subcommand -a extract -d 'Extract subtitles from video'
 complete -c subtool -n __fish_use_subcommand -a embed -d 'Embed subtitles in video'
+complete -c subtool -n __fish_use_subcommand -a strip -d 'Remove all subtitle tracks from video'
 complete -c subtool -n __fish_use_subcommand -a text -d 'Export plain text'
 complete -c subtool -n __fish_use_subcommand -a diff -d 'Compare two subtitles'
 complete -c subtool -n __fish_use_subcommand -a config -d 'Display/edit config'
@@ -4627,6 +4691,9 @@ Extract subtitles from a video (MKV, MP4)
 .TP
 .B embed
 Embed an SRT into a video
+.TP
+.B strip
+Remove all subtitle tracks from a video
 .TP
 .B text
 Export plain text from subtitle (no timestamps)
@@ -4848,7 +4915,7 @@ CONFIG_VALUE=""
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            get|search|translate|transcribe|batch|scan|auto|info|clean|sync|autosync|convert|merge|mix|fix|extract|embed|text|diff|providers|sources|check|manpage)
+            get|search|translate|transcribe|batch|scan|auto|info|clean|sync|autosync|convert|merge|mix|fix|extract|embed|strip|text|diff|providers|sources|check|manpage)
                 COMMAND="$1"; shift ;;
             completions)
                 COMMAND="completions"; shift
@@ -4977,6 +5044,7 @@ main() {
         autosync)  cmd_autosync ;;
         extract)   cmd_extract ;;
         embed)     cmd_embed ;;
+        strip)     cmd_strip ;;
         text)      cmd_text ;;
         diff)      cmd_diff ;;
         config)    cmd_config ;;

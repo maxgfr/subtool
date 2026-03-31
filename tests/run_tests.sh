@@ -1569,6 +1569,21 @@ out=$("$SUBSYNC" convert "$FIXTURES/basic.srt" 2>&1 || true)
 assert_output_contains "convert no --to: error message" "$out" "Specify.*--to"
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "strip"
+
+# strip without file
+out=$("$SUBSYNC" strip 2>&1 || true)
+assert_output_contains "strip no file: error message" "$out" "Specify.*video"
+
+# strip with non-video file
+out=$("$SUBSYNC" strip "$FIXTURES/basic.srt" 2>&1 || true)
+assert_output_contains "strip srt: not a video" "$out" "Not a video"
+
+# strip command appears in help
+out=$("$SUBSYNC" --help 2>&1 || true)
+assert_output_contains "help: strip command" "$out" "strip.*Remove.*subtitle"
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "multi-language support"
 
 # Multi-lang: info processes both languages (info doesn't use lang but dispatch still works)

@@ -44,13 +44,13 @@ All providers send subtitles in a single API call by default (threshold 50k line
 
 ## Commands
 
-`get`, `search`, `batch`, `scan`, `auto`, `transcribe`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `mix`, `fix`, `extract`, `embed`, `text`, `diff`, `config`, `check`, `providers`, `sources`, `completions`, `manpage`
+`get`, `search`, `batch`, `scan`, `auto`, `transcribe`, `translate`, `info`, `clean`, `sync`, `autosync`, `convert`, `merge`, `mix`, `fix`, `extract`, `embed`, `strip`, `text`, `diff`, `config`, `check`, `providers`, `sources`, `completions`, `manpage`
 
 ### `auto` command
 
 All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file, directory, or playlist (.txt) as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable, `--force-transcribe` to skip download and always transcribe). Supports `--dry-run` to preview actions without executing. `--skip-steps download,translate,sync,mix,embed` to skip specific steps. Directory mode tracks completed files in `.subtool_batch_state` for resume on interrupt (`--no-resume` to re-process all). Playlist mode (`--playlist file.txt` or auto-detected from `.txt` extension): reads one video path per line (comments with `#`, blank lines ignored, relative paths resolved from playlist directory).
 
-Supports `--mix` to create dual-language subtitles for language learning: source language in bold on top, target language in grey italic below. Output: `.mix.srt`. Use `--mix-lang <lang>` to specify the learning language explicitly. In the translate path, sync happens on `target_srt` first (identical to without --mix), then the mix inherits synced timestamps via swap mode — no second sync needed. Track title is set to "Mix German-French" (etc.) when embedding.
+Supports `--mix` to create dual-language subtitles for language learning: source language in bold on top, target language in grey italic below. Output: `.mix.srt`. Use `--mix-lang <lang>` to specify the learning language explicitly. In the translate path, BOTH `target_srt` and `existing_srt` are synced before mixing — this ensures both files drop the same blocks when ffsubsync skips negative timestamps, keeping the block pairing aligned. Track title is set to "Mix German-French" (etc.) when embedding.
 
 ### `transcribe` command
 
@@ -63,6 +63,10 @@ Extract subtitle tracks from a video file (MKV, MP4, etc.). Supports `--track <n
 ### `embed` command
 
 Embed an SRT subtitle into a video file. Uses `-map 0 -map 1:0` to preserve all existing streams. Properly sets `language` and `title` metadata on the new subtitle stream AND re-sets metadata on all existing subtitle streams (prevents "piste 1/2" generic labels in players).
+
+### `strip` command
+
+Remove all subtitle tracks from a video file. Uses `ffmpeg -map 0 -map -0:s -c copy` to copy all streams except subtitles. Validates the input is a video file (has video streams). Shows existing subtitle tracks before removing. Output: `movie.clean.mkv`.
 
 ### `mix` command
 
