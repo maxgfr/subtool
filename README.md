@@ -329,4 +329,4 @@ The `scan` command recursively finds video files in a directory and auto-downloa
 
 ## License
 
-MIT
+[MIT](License)
