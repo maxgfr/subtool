@@ -1522,7 +1522,7 @@ ${BOLD}COMMANDS${NC}
     fix         Repair an SRT (UTF-8 encoding, sorting, renumbering, overlaps)
     extract     Extract subtitles from a video (MKV, MP4)
     embed       Embed an SRT into a video
-    strip       Remove all subtitle tracks from a video
+    strip       Remove all subtitle tracks from a video (replaces original, --keep-files to keep both)
     text        Export plain text from subtitle (no timestamps)
     diff        Compare two subtitle files side by side
     config      Display/edit configuration (config set <KEY> <VALUE>)
@@ -1628,7 +1628,8 @@ ${BOLD}EXAMPLES${NC}
     $SCRIPT_NAME extract movie.mkv --all
     $SCRIPT_NAME extract movie.mkv --track 2
     $SCRIPT_NAME embed movie.mkv --sub movie.fr.srt -l fr
-    $SCRIPT_NAME strip movie.mkv                            # remove all subtitle tracks
+    $SCRIPT_NAME strip movie.mkv                            # remove all subs (replaces original)
+    $SCRIPT_NAME strip movie.mkv --keep-files               # keep original, output movie.clean.mkv
 
     # Transcribe (generate subtitles from audio)
     $SCRIPT_NAME transcribe movie.mkv
@@ -4297,17 +4298,30 @@ cmd_strip() {
         printf "  ${BOLD}%2d${NC}) [${CYAN}%s${NC}] %s (%s)\n" "$sidx" "$s_lang" "$display" "$s_codec" >&2
     done
 
-    local base_name ext output
-    base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
-    ext="${FILE_PATH##*.}"
-    output="${OUTPUT_DIR}/${base_name}.clean.${ext}"
+    local ext="${FILE_PATH##*.}"
 
-    # Copy all streams EXCEPT subtitles
-    if ffmpeg -v quiet -i "$FILE_PATH" -map 0 -map -0:s -c copy "$output" -y 2>/dev/null && [[ -s "$output" ]]; then
-        log "Cleaned video (no subtitles): $output"
+    if $KEEP_FILES; then
+        # --keep-files: write to .clean.ext alongside original
+        local base_name
+        base_name=$(basename "$FILE_PATH" | sed 's/\.[^.]*$//')
+        local output="${OUTPUT_DIR}/${base_name}.clean.${ext}"
+        if ffmpeg -v quiet -i "$FILE_PATH" -map 0 -map -0:s -c copy "$output" -y 2>/dev/null && [[ -s "$output" ]]; then
+            log "Cleaned video: $output (original kept)"
+        else
+            err "Strip failed"
+            return 1
+        fi
     else
-        err "Strip failed"
-        return 1
+        # Default: replace original file in-place
+        local tmp_output="${FILE_PATH%.${ext}}.strip_tmp.${ext}"
+        if ffmpeg -v quiet -i "$FILE_PATH" -map 0 -map -0:s -c copy "$tmp_output" -y 2>/dev/null && [[ -s "$tmp_output" ]]; then
+            mv "$tmp_output" "$FILE_PATH"
+            log "Stripped subtitles: $(basename "$FILE_PATH")"
+        else
+            rm -f "$tmp_output"
+            err "Strip failed"
+            return 1
+        fi
     fi
 }
 
