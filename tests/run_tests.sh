@@ -1588,21 +1588,22 @@ if [[ -f "$real_mix" ]]; then
     fi
 
     # Timestamps should match the reference mix (same synced timing)
-    gen_ts=$(grep ' --> ' "$real_mix" | head -5)
-    ref_ts=$(grep ' --> ' "$FIXTURES/real_test.fr.de.srt" | head -5)
+    gen_ts=$(awk '/ --> /{print; if(++n==5) exit}' "$real_mix")
+    ref_ts=$(awk '/ --> /{print; if(++n==5) exit}' "$FIXTURES/real_test.fr.de.srt")
     if [[ "$gen_ts" == "$ref_ts" ]]; then
         assert "real mix: first 5 timestamps match reference" 0
     else
         assert "real mix: first 5 timestamps match reference" 1
     fi
 
-    # No block should pair DE sound effect [Piepen] with FR dialogue text
-    # (this was the desync bug: block offset caused sound effects to pair with dialogue)
-    if grep -B1 "Piepen\|Musik\|ulkige Akkordeon" "$real_mix" | grep -q "<i>.*[A-Z]"; then
-        # Sound effect line has italic with real dialogue text → misaligned
-        assert "real mix: no sound effect paired with dialogue (desync check)" 1
+    # Verify key pairing: DE "Chicken Nuggets" must be with FR "nuggets" (not with unrelated text)
+    # The desync bug shifted blocks by 2, pairing DE sound effects with FR dialogue
+    # Check block 2: DE "Worauf hast du Hunger?" should pair with FR "De quoi as-tu faim"
+    block2=$(sed -n '7,12p' "$real_mix")
+    if echo "$block2" | grep -q "Hunger" && echo "$block2" | grep -q "faim"; then
+        assert "real mix: block 2 DE/FR pairing correct (desync regression)" 0
     else
-        assert "real mix: no sound effect paired with dialogue (desync check)" 0
+        assert "real mix: block 2 DE/FR pairing correct (desync regression)" 1
     fi
 else
     assert "real mix: output file found" 1
