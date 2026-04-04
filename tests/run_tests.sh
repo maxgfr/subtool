@@ -1822,6 +1822,32 @@ out=$("$SUBSYNC" --help 2>&1 || true)
 assert_output_contains "help: strip command" "$out" "strip.*Remove.*subtitle"
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "strip-existing flag"
+
+# --strip-existing implies --no-resume: batch state should be cleared
+strip_test_dir="$TMP_DIR/strip_test"
+mkdir -p "$strip_test_dir"
+# Create a fake batch state file
+echo "video1.mp4" > "$strip_test_dir/.subtool_batch_state"
+echo "video2.mp4" >> "$strip_test_dir/.subtool_batch_state"
+# Run auto with --strip-existing on empty dir (no videos, but batch state should be cleared)
+"$SUBSYNC" auto "$strip_test_dir" -l fr --strip-existing 2>&1 >/dev/null || true
+if [[ -f "$strip_test_dir/.subtool_batch_state" ]]; then
+    # File might exist but should be empty (cleared then no videos to add)
+    if [[ -s "$strip_test_dir/.subtool_batch_state" ]]; then
+        assert "strip-existing: batch state cleared" 1
+    else
+        assert "strip-existing: batch state cleared" 0
+    fi
+else
+    assert "strip-existing: batch state cleared" 0
+fi
+
+# --strip-existing should appear in help
+out=$("$SUBSYNC" --help 2>&1 || true)
+assert_output_contains "help: --strip-existing in help" "$out" "\-\-strip-existing"
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "multi-language support"
 
 # Multi-lang: info processes both languages (info doesn't use lang but dispatch still works)

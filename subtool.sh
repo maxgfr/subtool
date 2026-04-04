@@ -5081,7 +5081,7 @@ parse_args() {
             --embed)       AUTO_EMBED=true; shift ;;
             --no-embed)    NO_EMBED=true; shift ;;
             --force-embed) FORCE_EMBED=true; AUTO_EMBED=true; shift ;;
-            --strip-existing) STRIP_EXISTING=true; FORCE_EMBED=true; AUTO_EMBED=true; shift ;;
+            --strip-existing) STRIP_EXISTING=true; FORCE_EMBED=true; AUTO_EMBED=true; NO_RESUME=true; shift ;;
             --url)         SUBTITLE_URL="$2"; shift 2 ;;
             --dry-run)     DRY_RUN=true; shift ;;
             --json)        JSON_OUTPUT=true; QUIET=true; shift ;;
