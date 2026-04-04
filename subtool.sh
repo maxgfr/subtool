@@ -52,6 +52,7 @@ MIX_FILE=""
 MIX_MODE=false
 MIX_LANG=""
 SWAP_MIX=false
+STRIP_EXISTING=false
 
 # ── Default models ────────────────────────────────────────────────────────────
 MODEL_ZAI_CODEPLAN="glm-4.7"
@@ -1564,6 +1565,7 @@ ${BOLD}OPTIONS${NC}
     --embed                   Embed subtitles in video (auto: active by default)
     --no-embed                Disable automatic embedding
     --force-embed             Force embed even if subtitles already present (adds new track)
+    --strip-existing          Strip all existing subtitle tracks before embedding new ones
     --force-translate         Force translation even if subtitles found
     --transcribe-provider <p> Transcription provider (whisper|openai-api)
     --whisper-model <model>   Whisper model (tiny, base, small [default], medium, large)
@@ -2541,7 +2543,12 @@ cmd_auto() {
                 local mix_info=""
                 mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
                     embed_existing="${mix_info#*|}"
-                    embed_title="Mix $(_lang_title "${mix_info%%|*}")-$(_lang_title "$target")"
+                    local _ml="${mix_info%%|*}"
+                    if [[ "$SWAP_MIX" == "true" ]]; then
+                        embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                    else
+                        embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
+                    fi
                 }
             fi
             # Sync only the final file (avoid double sync)
@@ -2549,7 +2556,9 @@ cmd_auto() {
                 $DRY_RUN || _auto_sync "$video_file" "$embed_existing" "$target"
             fi
             if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                $DRY_RUN || { _auto_embed "$video_file" "$embed_existing" "$target" "$embed_title" && \
+                local embed_lang="$target"
+                [[ -n "$embed_title" ]] && embed_lang="mul"
+                $DRY_RUN || { _auto_embed "$video_file" "$embed_existing" "$embed_lang" "$embed_title" && \
                     _auto_cleanup "$target_srt"; \
                     [[ "$embed_existing" != "$target_srt" ]] && _auto_cleanup "$embed_existing"; }
             fi
@@ -2584,13 +2593,20 @@ cmd_auto() {
                         local mix_info=""
                         mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
                             embed_extracted="${mix_info#*|}"
-                            embed_title="Mix $(_lang_title "${mix_info%%|*}")-$(_lang_title "$target")"
+                            local _ml="${mix_info%%|*}"
+                            if [[ "$SWAP_MIX" == "true" ]]; then
+                                embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                            else
+                                embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
+                            fi
                         }
                     fi
                     # Sync only the final file
                     [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$embed_extracted" "$target"
                     if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                        _auto_embed "$video_file" "$embed_extracted" "$target" "$embed_title" && \
+                        local embed_lang="$target"
+                        [[ -n "$embed_title" ]] && embed_lang="mul"
+                        _auto_embed "$video_file" "$embed_extracted" "$embed_lang" "$embed_title" && \
                             _auto_cleanup "$target_srt"
                         [[ "$embed_extracted" != "$target_srt" ]] && _auto_cleanup "$embed_extracted"
                     fi
@@ -2654,13 +2670,20 @@ cmd_auto() {
                             local mix_info=""
                             mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
                                 embed_dl="${mix_info#*|}"
-                                embed_title="Mix $(_lang_title "${mix_info%%|*}")-$(_lang_title "$target")"
+                                local _ml="${mix_info%%|*}"
+                                if [[ "$SWAP_MIX" == "true" ]]; then
+                                    embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                                else
+                                    embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
+                                fi
                             }
                         fi
                         # Sync only the final file (avoid double sync)
                         [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$embed_dl" "$target"
                         if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                            _auto_embed "$video_file" "$embed_dl" "$target" "$embed_title"
+                            local embed_lang="$target"
+                            [[ -n "$embed_title" ]] && embed_lang="mul"
+                            _auto_embed "$video_file" "$embed_dl" "$embed_lang" "$embed_title"
                             _auto_cleanup "$target_srt"
                             [[ "$embed_dl" != "$target_srt" ]] && _auto_cleanup "$embed_dl"
                         fi
@@ -2759,13 +2782,20 @@ cmd_auto() {
                             local mix_info=""
                             mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
                                 embed_tr="${mix_info#*|}"
-                                embed_title="Mix $(_lang_title "${mix_info%%|*}")-$(_lang_title "$target")"
+                                local _ml="${mix_info%%|*}"
+                                if [[ "$SWAP_MIX" == "true" ]]; then
+                                    embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                                else
+                                    embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
+                                fi
                             }
                         fi
                         # Sync only the final file
                         [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$embed_tr" "$target"
                         if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                            _auto_embed "$video_file" "$embed_tr" "$target" "$embed_title" && \
+                            local embed_lang="$target"
+                            [[ -n "$embed_title" ]] && embed_lang="mul"
+                            _auto_embed "$video_file" "$embed_tr" "$embed_lang" "$embed_title" && \
                                 _auto_cleanup "$target_srt"
                             [[ "$embed_tr" != "$target_srt" ]] && _auto_cleanup "$embed_tr"
                         fi
@@ -2810,15 +2840,30 @@ cmd_auto() {
                     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
                     local src_lang="${existing_lang:-}"
                     # Both files synced: same block count, matching timestamps
-                    info "Mixing: $src_lang (top) + $target (bottom, italic)"
-                    _mix_subtitles "$target_srt" "$existing_srt" "$mix_output" true
+                    # Default: target lang on top (normal), source on bottom (italic). --swap reverses.
+                    local do_swap=false
+                    [[ "$SWAP_MIX" == "true" ]] && do_swap=true
+                    if [[ "$do_swap" == "true" ]]; then
+                        info "Mixing: $src_lang (top) + $target (bottom, italic)"
+                    else
+                        info "Mixing: $target (top) + $src_lang (bottom, italic)"
+                    fi
+                    _mix_subtitles "$target_srt" "$existing_srt" "$mix_output" "$do_swap"
                     log "Mixed: $(basename "$mix_output")"
                     embed_srt="$mix_output"
-                    [[ -n "$src_lang" ]] && embed_title="Mix $(_lang_title "$src_lang")-$(_lang_title "$target")"
+                    if [[ -n "$src_lang" ]]; then
+                        if [[ "$do_swap" == "true" ]]; then
+                            embed_title="Mix $(_lang_title "$src_lang")-$(_lang_title "$target")"
+                        else
+                            embed_title="Mix $(_lang_title "$target")-$(_lang_title "$src_lang")"
+                        fi
+                    fi
                 fi
                 # ── Step 5: Embed if requested ──
                 if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                    _auto_embed "$video_file" "$embed_srt" "$target" "$embed_title" && \
+                    local embed_lang="$target"
+                    [[ -n "$embed_title" ]] && embed_lang="mul"
+                    _auto_embed "$video_file" "$embed_srt" "$embed_lang" "$embed_title" && \
                         _auto_cleanup "$target_srt" "$existing_srt"
                     [[ "$embed_srt" != "$target_srt" ]] && _auto_cleanup "$embed_srt"
                 fi
@@ -3209,6 +3254,21 @@ _auto_embed() {
     streams_json=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$video" 2>/dev/null)
     local sub_count
     sub_count=$(echo "$streams_json" | jq '.streams | length' 2>/dev/null || echo "0")
+
+    # Strip existing subtitle tracks if requested
+    if [[ "$STRIP_EXISTING" == "true" && "$sub_count" -gt 0 ]]; then
+        local vext_strip="${video##*.}"
+        local stripped_video="${video%.${vext_strip}}.stripped.${vext_strip}"
+        info "Stripping $sub_count existing subtitle track(s): $(basename "$video")"
+        if ffmpeg -v quiet -i "$video" -map 0 -map -0:s -c copy "$stripped_video" -y 2>/dev/null && [[ -s "$stripped_video" ]]; then
+            mv "$stripped_video" "$video"
+            sub_count=0
+            streams_json='{"streams":[]}'
+        else
+            warn "Strip failed, embedding alongside existing tracks"
+            rm -f "$stripped_video"
+        fi
+    fi
 
     # Skip if video already has a subtitle stream (unless --force-embed)
     if [[ "$sub_count" -gt 0 ]] && ! $FORCE_EMBED; then
@@ -4431,7 +4491,7 @@ COMPLETIONS_SHELL=""
 cmd_completions() {
     local shell="${COMPLETIONS_SHELL:-bash}"
     local commands="auto transcribe get search batch translate info clean sync autosync convert merge mix fix extract embed strip text diff config check providers sources completions manpage"
-    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --no-resume --keep-files --mix --mix-lang --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
+    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --strip-existing --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --no-resume --keep-files --mix --mix-lang --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
 
     case "$shell" in
         bash)
@@ -4551,6 +4611,8 @@ _subtool() {
                         '--url[Subtitle URL]:url:' \\
                         '--embed[Enable embedding]' \\
                         '--no-embed[Disable embedding]' \\
+                        '--force-embed[Force embed alongside existing]' \\
+                        '--strip-existing[Strip existing subtitles before embed]' \\
                         '--force-translate[Force translation]' \\
                         '--transcribe-provider[Transcription provider]:provider:(whisper openai-api)' \\
                         '--whisper-model[Whisper model]:model:(tiny base small medium large)' \\
@@ -4636,6 +4698,8 @@ complete -c subtool -l all -d 'Extract all tracks'
 complete -c subtool -l url -d 'Subtitle URL' -x
 complete -c subtool -l embed -d 'Enable embedding'
 complete -c subtool -l no-embed -d 'Disable embedding'
+complete -c subtool -l force-embed -d 'Force embed alongside existing'
+complete -c subtool -l strip-existing -d 'Strip existing subtitles before embed'
 complete -c subtool -l force-translate -d 'Force translation'
 complete -c subtool -l transcribe-provider -d 'Transcription provider' -x -a 'whisper openai-api'
 complete -c subtool -l whisper-model -d 'Whisper model' -x -a 'tiny base small medium large'
@@ -4826,6 +4890,12 @@ Enable subtitle embedding
 \fB\-\-no\-embed\fR
 Disable automatic embedding
 .TP
+\fB\-\-force\-embed\fR
+Force embed even if subtitles already present (adds new track)
+.TP
+\fB\-\-strip\-existing\fR
+Strip all existing subtitle tracks before embedding new ones
+.TP
 \fB\-\-force\-translate\fR
 Force translation even if subtitles found
 .TP
@@ -5011,6 +5081,7 @@ parse_args() {
             --embed)       AUTO_EMBED=true; shift ;;
             --no-embed)    NO_EMBED=true; shift ;;
             --force-embed) FORCE_EMBED=true; AUTO_EMBED=true; shift ;;
+            --strip-existing) STRIP_EXISTING=true; FORCE_EMBED=true; AUTO_EMBED=true; shift ;;
             --url)         SUBTITLE_URL="$2"; shift 2 ;;
             --dry-run)     DRY_RUN=true; shift ;;
             --json)        JSON_OUTPUT=true; QUIET=true; shift ;;

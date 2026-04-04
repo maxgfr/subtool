@@ -2447,6 +2447,8 @@ assert_output_contains "help: --mix-with" "$out" "\-\-mix-with"
 assert_output_contains "help: --mix" "$out" "\-\-mix"
 assert_output_contains "help: --mix-lang" "$out" "\-\-mix-lang"
 assert_output_contains "help: --swap" "$out" "\-\-swap"
+assert_output_contains "help: --force-embed" "$out" "\-\-force-embed"
+assert_output_contains "help: --strip-existing" "$out" "\-\-strip-existing"
 assert_output_contains "help: mix command" "$out" "mix.*Mix.*language"
 assert_output_contains "help: --playlist" "$out" "\-\-playlist"
 
