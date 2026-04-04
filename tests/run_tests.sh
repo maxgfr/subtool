@@ -1690,6 +1690,96 @@ if [[ -f "$mismatch_mix" ]]; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "mix --swap flag"
+
+# Default --mix-with: primary (DE) on top, --mix-with (FR) in italic
+"$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+default_mix="$TMP_DIR/basic.mix.srt"
+if [[ -f "$default_mix" ]]; then
+    # DE should be on top (not italic), FR should be italic
+    if grep -q "^Willkommen" "$default_mix" && grep -q "<i>Bienvenue" "$default_mix"; then
+        assert "mix default: DE on top, FR italic" 0
+    else
+        assert "mix default: DE on top, FR italic" 1
+    fi
+    if grep -q "<i>Willkommen" "$default_mix"; then
+        assert "mix default: DE is NOT italic" 1
+    else
+        assert "mix default: DE is NOT italic" 0
+    fi
+else
+    assert "mix default: output file found" 1
+fi
+
+# With --swap: --mix-with (FR) on top, primary (DE) in italic
+"$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" --swap -o "$TMP_DIR" 2>&1 >/dev/null
+swapped_mix="$TMP_DIR/basic.mix.srt"
+if [[ -f "$swapped_mix" ]]; then
+    # FR should be on top (not italic), DE should be italic
+    if grep -q "^Bienvenue" "$swapped_mix" && grep -q "<i>Willkommen" "$swapped_mix"; then
+        assert "mix --swap: FR on top, DE italic" 0
+    else
+        assert "mix --swap: FR on top, DE italic" 1
+    fi
+    if grep -q "<i>Bienvenue" "$swapped_mix"; then
+        assert "mix --swap: FR is NOT italic" 1
+    else
+        assert "mix --swap: FR is NOT italic" 0
+    fi
+else
+    assert "mix --swap: output file found" 1
+fi
+
+# Reversed: FR as primary, DE as --mix-with, with --swap → DE on top, FR italic
+"$SUBSYNC" mix "$FIXTURES/basic_fr.srt" --mix-with "$FIXTURES/basic.srt" --swap -o "$TMP_DIR" 2>&1 >/dev/null
+rev_swapped="$TMP_DIR/basic_fr.mix.srt"
+if [[ -f "$rev_swapped" ]]; then
+    if grep -q "^Willkommen" "$rev_swapped" && grep -q "<i>Bienvenue" "$rev_swapped"; then
+        assert "mix reversed --swap: DE on top, FR italic" 0
+    else
+        assert "mix reversed --swap: DE on top, FR italic" 1
+    fi
+else
+    assert "mix reversed --swap: output file found" 1
+fi
+
+# --swap preserves timestamps from --mix-with file
+ts_swap_pri="$TMP_DIR/ts_swap_pri.srt"
+ts_swap_sec="$TMP_DIR/ts_swap_sec.srt"
+cat > "$ts_swap_pri" << 'EOF'
+1
+00:00:10,000 --> 00:00:13,000
+Hallo Welt
+
+2
+00:00:20,000 --> 00:00:23,000
+Guten Tag
+EOF
+cat > "$ts_swap_sec" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,000
+Bonjour le monde
+
+2
+00:00:05,000 --> 00:00:07,000
+Bonne journée
+EOF
+"$SUBSYNC" mix "$ts_swap_pri" --mix-with "$ts_swap_sec" --swap -o "$TMP_DIR" 2>&1 >/dev/null
+ts_swap_out="$TMP_DIR/ts_swap_pri.mix.srt"
+if [[ -f "$ts_swap_out" ]]; then
+    # Timestamps from --mix-with (FR: 01,000 and 05,000), even with --swap
+    assert_file_contains "mix --swap timestamps: uses --mix-with timing" "$ts_swap_out" "00:00:01,000 --> 00:00:03,000"
+    # FR on top (not italic), DE italic
+    if grep -q "^Bonjour" "$ts_swap_out" && grep -q "<i>Hallo" "$ts_swap_out"; then
+        assert "mix --swap timestamps: FR on top, DE italic" 0
+    else
+        assert "mix --swap timestamps: FR on top, DE italic" 1
+    fi
+else
+    assert "mix --swap timestamps: output file found" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "error messages"
 
 # embed without --sub
@@ -2356,6 +2446,7 @@ assert_output_contains "help: --diff-with" "$out" "\-\-diff-with"
 assert_output_contains "help: --mix-with" "$out" "\-\-mix-with"
 assert_output_contains "help: --mix" "$out" "\-\-mix"
 assert_output_contains "help: --mix-lang" "$out" "\-\-mix-lang"
+assert_output_contains "help: --swap" "$out" "\-\-swap"
 assert_output_contains "help: mix command" "$out" "mix.*Mix.*language"
 assert_output_contains "help: --playlist" "$out" "\-\-playlist"
 

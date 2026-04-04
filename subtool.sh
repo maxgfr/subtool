@@ -51,6 +51,7 @@ DIFF_FILE=""
 MIX_FILE=""
 MIX_MODE=false
 MIX_LANG=""
+SWAP_MIX=false
 
 # ── Default models ────────────────────────────────────────────────────────────
 MODEL_ZAI_CODEPLAN="glm-4.7"
@@ -1551,6 +1552,7 @@ ${BOLD}OPTIONS${NC}
     --mix-with <file>         Second file for mix (dual-language subtitles)
     --mix                     Enable dual-language mix in auto mode
     --mix-lang <lang>         Language for mix top (learning language). Implies --mix
+    --swap                    Swap mix order (reverse which language is on top vs italic)
     --diff-with <file>        Second file for subtitle diff comparison
     --playlist <file>         Text file listing video paths for batch auto
     --ref <video|srt>         Reference for autosync (video or SRT)
@@ -1587,8 +1589,9 @@ ${BOLD}EXAMPLES${NC}
     $SCRIPT_NAME auto ~/Movies/Die.Discounter -l fr
     $SCRIPT_NAME auto ~/Movies/Die.Discounter -l fr --embed
     $SCRIPT_NAME auto movie.mkv -l fr
-    $SCRIPT_NAME auto movie.mkv -l fr --mix           # dual-language: source top + FR bottom
-    $SCRIPT_NAME auto movie.mkv -l fr --mix-lang de   # dual-language: DE top + FR bottom
+    $SCRIPT_NAME auto movie.mkv -l fr --mix           # dual-language: FR top + source italic
+    $SCRIPT_NAME auto movie.mkv -l fr --mix --swap    # dual-language: source top + FR italic
+    $SCRIPT_NAME auto movie.mkv -l fr --mix-lang de   # dual-language: FR top + DE italic
 
     # Smart get - single episode
     $SCRIPT_NAME get -q \"Die Discounter S01E03\" -l de
@@ -2910,9 +2913,16 @@ _auto_mix() {
     _auto_sync "$video" "$mix_source" "$mix_lang" 2>/dev/null
 
     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
-    info "Mixing: $mix_lang (top) + $target (bottom, italic)"
+    # Default: target lang on top (normal), source lang on bottom (italic). --swap reverses.
+    local do_swap=false
+    [[ "$SWAP_MIX" == "true" ]] && do_swap=true
+    if [[ "$do_swap" == "true" ]]; then
+        info "Mixing: $mix_lang (top) + $target (bottom, italic)"
+    else
+        info "Mixing: $target (top) + $mix_lang (bottom, italic)"
+    fi
     # Both files synced: same block alignment, target_srt timestamps as reference
-    _mix_subtitles "$target_srt" "$mix_source" "$mix_output" true
+    _mix_subtitles "$target_srt" "$mix_source" "$mix_output" "$do_swap"
     log "Mixed: $(basename "$mix_output")"
     # Output lang|path so caller can parse both (avoids subshell variable loss)
     echo "${mix_lang}|${mix_output}"
@@ -3858,11 +3868,22 @@ cmd_mix() {
     local output="${OUTPUT_DIR}/${stripped}.mix.srt"
 
     header "Mix subtitles (language learning)"
-    info "Top (learning):  $(basename "$primary") [$lang1]"
-    info "Bottom (reference, italic): $(basename "$secondary") [$lang2]"
 
-    # Secondary as primary arg (preserves its timestamps), swap puts primary text on top
-    _mix_subtitles "$secondary" "$primary" "$output" true
+    # Default order: --mix-with → primary on top; -l → translated on top. --swap reverses.
+    local do_swap=true
+    [[ -n "$LANG_TARGET" ]] && do_swap=false
+    [[ "$SWAP_MIX" == "true" ]] && { [[ "$do_swap" == "true" ]] && do_swap=false || do_swap=true; }
+
+    if [[ "$do_swap" == "true" ]]; then
+        info "Top (normal):  $(basename "$primary") [$lang1]"
+        info "Bottom (italic): $(basename "$secondary") [$lang2]"
+    else
+        info "Top (normal):  $(basename "$secondary") [$lang2]"
+        info "Bottom (italic): $(basename "$primary") [$lang1]"
+    fi
+
+    # Secondary as primary arg (preserves its timestamps), swap controls display order
+    _mix_subtitles "$secondary" "$primary" "$output" "$do_swap"
 
     log "Mixed file: $output"
 }
@@ -4410,7 +4431,7 @@ COMPLETIONS_SHELL=""
 cmd_completions() {
     local shell="${COMPLETIONS_SHELL:-bash}"
     local commands="auto transcribe get search batch translate info clean sync autosync convert merge mix fix extract embed strip text diff config check providers sources completions manpage"
-    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --no-resume --keep-files --mix --mix-lang --auto --dry-run --json --verbose --quiet -h --help -v --version"
+    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --no-resume --keep-files --mix --mix-lang --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
 
     case "$shell" in
         bash)
@@ -4520,6 +4541,7 @@ _subtool() {
                         '--mix-with[Second file for mix]:file:_files' \\
                         '--mix[Enable dual-language mix in auto]' \\
                         '--mix-lang[Learning language for mix]:lang:' \\
+                        '--swap[Swap mix display order]' \\
                         '--diff-with[File to diff]:file:_files' \\
                         '--playlist[Playlist file]:file:_files' \\
                         '--ref[Reference file]:file:_files' \\
@@ -4604,6 +4626,7 @@ complete -c subtool -l merge-with -d 'Secondary file' -r -F
 complete -c subtool -l mix-with -d 'Second file for mix' -r -F
 complete -c subtool -l mix -d 'Enable dual-language mix in auto'
 complete -c subtool -l mix-lang -d 'Learning language for mix' -x
+complete -c subtool -l swap -d 'Swap mix display order'
 complete -c subtool -l diff-with -d 'File to diff' -r -F
 complete -c subtool -l playlist -d 'Playlist file' -r -F
 complete -c subtool -l ref -d 'Reference file' -r -F
@@ -4965,6 +4988,7 @@ parse_args() {
             --mix-with)    MIX_FILE="$2"; shift 2 ;;
             --mix)         MIX_MODE=true; shift ;;
             --mix-lang)    MIX_LANG="$2"; MIX_MODE=true; shift 2 ;;
+            --swap)        SWAP_MIX=true; shift ;;
             --playlist)    PLAYLIST_FILE="$2"; shift 2 ;;
             --sub)         EMBED_SUB="$2"; shift 2 ;;
             --track)       EXTRACT_TRACK="$2"; shift 2 ;;
