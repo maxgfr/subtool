@@ -197,6 +197,7 @@ subtool manpage | man -l -
 | `--dry-run` | Show results without downloading |
 | `--embed` | Force embed subtitles into video (default in `auto` if ffmpeg available) |
 | `--no-embed` | Disable auto-embed in `auto` mode |
+| `--strip-existing` | Remove all existing subtitle tracks before embedding (implies `--force-embed`) |
 | `--url <url>` | Provide a subtitle URL directly for download |
 | `--json` | Output results as JSON (implies `--quiet`) |
 | `--transcribe-provider <p>` | Transcription provider (`whisper` or `openai-api`) |

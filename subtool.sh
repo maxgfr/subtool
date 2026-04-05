@@ -45,7 +45,7 @@ FORCE_TRANSCRIBE=false
 CLAUDE_EFFORT=""
 SKIP_STEPS=""
 TRANSLATE_MAX_PARALLEL=""
-NO_RESUME=false
+NO_RESUME=true
 PLAYLIST_FILE=""
 DIFF_FILE=""
 MIX_FILE=""
@@ -1576,7 +1576,7 @@ ${BOLD}OPTIONS${NC}
     --claude-effort <level>   Claude Code effort (low [default], medium, high)
     --skip-steps <steps>      Skip steps in auto (comma-separated: download,translate,sync,mix,embed)
     --max-parallel <n>        Max parallel translation chunks (default: 3 LLM, 8 google)
-    --no-resume               Ignore batch state and re-process all files in auto directory mode
+    --resume                  Resume batch from previous state (skip already-completed files)
     --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
     --auto                    Automatically select most downloaded result
     --dry-run                 Display results without downloading
@@ -2487,7 +2487,7 @@ cmd_auto() {
         batch_state="${SCAN_DIR}/.subtool_batch_state"
         if $NO_RESUME && [[ -f "$batch_state" ]]; then
             rm -f "$batch_state"
-            info "Batch state cleared (--no-resume)"
+            info "Batch state cleared (re-processing all)"
         fi
     fi
 
@@ -2538,29 +2538,32 @@ cmd_auto() {
 
         # Already has target language subtitle? (skip only if non-empty)
         if [[ -s "$target_srt" ]]; then
-            local embed_existing="$target_srt" embed_title=""
+            local mix_file="" mix_embed_title="" mix_source_srt="" mix_source_lang=""
+            # Sync target first
+            if [[ "$_skip" != *",sync,"* ]]; then
+                $DRY_RUN || _auto_sync "$video_file" "$target_srt" "$target"
+            fi
             if $MIX_MODE && [[ "$_skip" != *",mix,"* ]] && ! $DRY_RUN; then
                 local mix_info=""
                 mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
-                    embed_existing="${mix_info#*|}"
                     local _ml="${mix_info%%|*}"
+                    local _rest="${mix_info#*|}"
+                    mix_file="${_rest%%|*}"
+                    mix_source_srt="${_rest#*|}"
+                    mix_source_lang="$_ml"
+                    [[ "$mix_source_srt" == "$mix_file" ]] && mix_source_srt=""
                     if [[ "$SWAP_MIX" == "true" ]]; then
-                        embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                        mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
                     else
-                        embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
+                        mix_embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
                     fi
                 }
             fi
-            # Sync only the final file (avoid double sync)
-            if [[ "$_skip" != *",sync,"* ]]; then
-                $DRY_RUN || _auto_sync "$video_file" "$embed_existing" "$target"
-            fi
             if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                local embed_lang="$target"
-                [[ -n "$embed_title" ]] && embed_lang="mul"
-                $DRY_RUN || { _auto_embed "$video_file" "$embed_existing" "$embed_lang" "$embed_title" && \
+                $DRY_RUN || { _auto_embed_with_mix "$video_file" "$target_srt" "$target" "$mix_file" "$mix_embed_title" "$mix_source_srt" "$mix_source_lang" && \
                     _auto_cleanup "$target_srt"; \
-                    [[ "$embed_existing" != "$target_srt" ]] && _auto_cleanup "$embed_existing"; }
+                    [[ -n "$mix_file" ]] && _auto_cleanup "$mix_file"; \
+                    [[ -n "$mix_source_srt" ]] && _auto_cleanup "$mix_source_srt"; }
             fi
             ((skip++)) || true
             continue
@@ -2588,28 +2591,68 @@ cmd_auto() {
                 if ffmpeg -v error -i "$video_file" -map "0:${embedded_idx}" -c:s srt "$target_srt" -y 2>/dev/null && [[ -s "$target_srt" ]]; then
                     log "Extracted embedded subtitle ($target, stream $embedded_idx): $(basename "$target_srt")"
                     ((success++)) || true
-                    local embed_extracted="$target_srt" embed_title=""
+                    local mix_file="" mix_embed_title="" mix_source_srt="" mix_source_lang=""
+                    # Sync target first
+                    [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
                     if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
+                        # Extract a second subtitle stream in another language for mixing
+                        local mix_existing_srt="" mix_existing_lang=""
+                        if [[ -n "$MIX_LANG" ]]; then
+                            # --mix-lang specified: extract that language
+                            local _mix_idx
+                            if _mix_idx=$(_find_subtitle_stream_index "$video_file" "$MIX_LANG") && [[ "$_mix_idx" != "$embedded_idx" ]]; then
+                                mix_existing_srt="${dir_name}/${name_no_ext}.${MIX_LANG}.srt"
+                                if ffmpeg -v error -i "$video_file" -map "0:${_mix_idx}" -c:s srt "$mix_existing_srt" -y 2>/dev/null && [[ -s "$mix_existing_srt" ]]; then
+                                    mix_existing_lang="$MIX_LANG"
+                                    log "Extracted embedded subtitle ($MIX_LANG, stream $_mix_idx): $(basename "$mix_existing_srt")"
+                                else
+                                    mix_existing_srt=""
+                                fi
+                            fi
+                        else
+                            # No --mix-lang: find any other subtitle stream
+                            local _s_idx _s_lang
+                            while IFS=',' read -r _s_idx _s_lang; do
+                                _s_idx=$(echo "$_s_idx" | tr -d '[:space:]')
+                                _s_lang=$(echo "$_s_lang" | tr -d '[:space:]')
+                                [[ "$_s_idx" == "$embedded_idx" ]] && continue
+                                [[ -z "$_s_lang" || "$_s_lang" == "und" ]] && continue
+                                local _s_lang2
+                                _s_lang2=$(_iso639_2_to_lang "$_s_lang")
+                                [[ "$_s_lang2" == "$target" ]] && continue
+                                mix_existing_srt="${dir_name}/${name_no_ext}.${_s_lang2}.srt"
+                                if ffmpeg -v error -i "$video_file" -map "0:${_s_idx}" -c:s srt "$mix_existing_srt" -y 2>/dev/null && [[ -s "$mix_existing_srt" ]]; then
+                                    mix_existing_lang="$_s_lang2"
+                                    log "Extracted embedded subtitle ($_s_lang2, stream $_s_idx): $(basename "$mix_existing_srt")"
+                                    break
+                                else
+                                    mix_existing_srt=""
+                                fi
+                            done < <(ffprobe -v error -select_streams s -show_entries stream=index:stream_tags=language -of csv=p=0 "$video_file" 2>/dev/null)
+                        fi
                         local mix_info=""
-                        mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
-                            embed_extracted="${mix_info#*|}"
+                        mix_info=$(_auto_mix "$video_file" "$target_srt" "$target" "$mix_existing_srt" "$mix_existing_lang") && {
                             local _ml="${mix_info%%|*}"
+                            local _rest="${mix_info#*|}"
+                            mix_file="${_rest%%|*}"
+                            mix_source_srt="${_rest#*|}"
+                            mix_source_lang="$_ml"
+                            [[ "$mix_source_srt" == "$mix_file" ]] && mix_source_srt=""
                             if [[ "$SWAP_MIX" == "true" ]]; then
-                                embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                                mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
                             else
-                                embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
+                                mix_embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
                             fi
                         }
                     fi
-                    # Sync only the final file
-                    [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$embed_extracted" "$target"
                     if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                        local embed_lang="$target"
-                        [[ -n "$embed_title" ]] && embed_lang="mul"
-                        _auto_embed "$video_file" "$embed_extracted" "$embed_lang" "$embed_title" && \
+                        _auto_embed_with_mix "$video_file" "$target_srt" "$target" "$mix_file" "$mix_embed_title" "$mix_source_srt" "$mix_source_lang" && \
                             _auto_cleanup "$target_srt"
-                        [[ "$embed_extracted" != "$target_srt" ]] && _auto_cleanup "$embed_extracted"
+                        [[ -n "$mix_file" ]] && _auto_cleanup "$mix_file"
+                        [[ -n "$mix_source_srt" ]] && _auto_cleanup "$mix_source_srt"
                     fi
+                    # Clean up extracted mix source if it differs from mix_source_srt (e.g. _auto_mix used download instead)
+                    [[ -n "$mix_existing_srt" && -f "$mix_existing_srt" ]] && _auto_cleanup "$mix_existing_srt"
                     [[ -n "$batch_state" ]] && echo "$base_name" >> "$batch_state"
                     continue
                 fi
@@ -2665,27 +2708,30 @@ cmd_auto() {
                     if download_subtitle "$first" "$target_srt" 2>/dev/null; then
                         log "Downloaded (${target}): $target_srt"
                         ((success++)) || true
-                        local embed_dl="$target_srt" embed_title=""
+                        local mix_file="" mix_embed_title="" mix_source_srt="" mix_source_lang=""
+                        # Sync target first
+                        [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
                         if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                             local mix_info=""
                             mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
-                                embed_dl="${mix_info#*|}"
                                 local _ml="${mix_info%%|*}"
+                                local _rest="${mix_info#*|}"
+                                mix_file="${_rest%%|*}"
+                                mix_source_srt="${_rest#*|}"
+                                mix_source_lang="$_ml"
+                                [[ "$mix_source_srt" == "$mix_file" ]] && mix_source_srt=""
                                 if [[ "$SWAP_MIX" == "true" ]]; then
-                                    embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                                    mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
                                 else
-                                    embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
+                                    mix_embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
                                 fi
                             }
                         fi
-                        # Sync only the final file (avoid double sync)
-                        [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$embed_dl" "$target"
                         if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                            local embed_lang="$target"
-                            [[ -n "$embed_title" ]] && embed_lang="mul"
-                            _auto_embed "$video_file" "$embed_dl" "$embed_lang" "$embed_title"
+                            _auto_embed_with_mix "$video_file" "$target_srt" "$target" "$mix_file" "$mix_embed_title" "$mix_source_srt" "$mix_source_lang"
                             _auto_cleanup "$target_srt"
-                            [[ "$embed_dl" != "$target_srt" ]] && _auto_cleanup "$embed_dl"
+                            [[ -n "$mix_file" ]] && _auto_cleanup "$mix_file"
+                            [[ -n "$mix_source_srt" ]] && _auto_cleanup "$mix_source_srt"
                         fi
                         [[ -n "$batch_state" ]] && echo "$base_name" >> "$batch_state"
                         continue
@@ -2777,27 +2823,30 @@ cmd_auto() {
                         mv "$transcribed_srt" "$target_srt"
                         log "Transcribed ($tr_lang): $(basename "$target_srt")"
                         ((success++)) || true
-                        local embed_tr="$target_srt" embed_title=""
+                        local mix_file="" mix_embed_title="" mix_source_srt="" mix_source_lang=""
+                        # Sync target first
+                        [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
                         if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                             local mix_info=""
                             mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
-                                embed_tr="${mix_info#*|}"
                                 local _ml="${mix_info%%|*}"
+                                local _rest="${mix_info#*|}"
+                                mix_file="${_rest%%|*}"
+                                mix_source_srt="${_rest#*|}"
+                                mix_source_lang="$_ml"
+                                [[ "$mix_source_srt" == "$mix_file" ]] && mix_source_srt=""
                                 if [[ "$SWAP_MIX" == "true" ]]; then
-                                    embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                                    mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
                                 else
-                                    embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
+                                    mix_embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
                                 fi
                             }
                         fi
-                        # Sync only the final file
-                        [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$embed_tr" "$target"
                         if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                            local embed_lang="$target"
-                            [[ -n "$embed_title" ]] && embed_lang="mul"
-                            _auto_embed "$video_file" "$embed_tr" "$embed_lang" "$embed_title" && \
+                            _auto_embed_with_mix "$video_file" "$target_srt" "$target" "$mix_file" "$mix_embed_title" "$mix_source_srt" "$mix_source_lang" && \
                                 _auto_cleanup "$target_srt"
-                            [[ "$embed_tr" != "$target_srt" ]] && _auto_cleanup "$embed_tr"
+                            [[ -n "$mix_file" ]] && _auto_cleanup "$mix_file"
+                            [[ -n "$mix_source_srt" ]] && _auto_cleanup "$mix_source_srt"
                         fi
                         [[ -n "$batch_state" ]] && echo "$base_name" >> "$batch_state"
                         continue
@@ -2836,13 +2885,14 @@ cmd_auto() {
                 fi
                 # ── Step 4b: Mix using SYNCED target_srt timestamps ──
                 local embed_srt="$target_srt" embed_title=""
+                local mix_file="" mix_embed_title=""
                 if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
                     local src_lang="${existing_lang:-}"
                     # Both files synced: same block count, matching timestamps
-                    # Default: target lang on top (normal), source on bottom (italic). --swap reverses.
-                    local do_swap=false
-                    [[ "$SWAP_MIX" == "true" ]] && do_swap=true
+                    # Default: swap mode — source/learning lang on top, target/native on bottom (italic).
+                    local do_swap=true
+                    [[ "$SWAP_MIX" == "true" ]] && do_swap=false
                     if [[ "$do_swap" == "true" ]]; then
                         info "Mixing: $src_lang (top) + $target (bottom, italic)"
                     else
@@ -2850,22 +2900,25 @@ cmd_auto() {
                     fi
                     _mix_subtitles "$target_srt" "$existing_srt" "$mix_output" "$do_swap"
                     log "Mixed: $(basename "$mix_output")"
-                    embed_srt="$mix_output"
+                    mix_file="$mix_output"
                     if [[ -n "$src_lang" ]]; then
                         if [[ "$do_swap" == "true" ]]; then
-                            embed_title="Mix $(_lang_title "$src_lang")-$(_lang_title "$target")"
+                            mix_embed_title="Mix $(_lang_title "$src_lang")-$(_lang_title "$target")"
                         else
-                            embed_title="Mix $(_lang_title "$target")-$(_lang_title "$src_lang")"
+                            mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$src_lang")"
                         fi
                     fi
                 fi
                 # ── Step 5: Embed if requested ──
                 if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                    local embed_lang="$target"
-                    [[ -n "$embed_title" ]] && embed_lang="mul"
-                    _auto_embed "$video_file" "$embed_srt" "$embed_lang" "$embed_title" && \
+                    local _src_srt="" _src_lang=""
+                    if [[ -n "$mix_file" && -n "$existing_srt" && -f "$existing_srt" ]]; then
+                        _src_srt="$existing_srt"
+                        _src_lang="${existing_lang:-}"
+                    fi
+                    _auto_embed_with_mix "$video_file" "$target_srt" "$target" "$mix_file" "$mix_embed_title" "$_src_srt" "$_src_lang" && \
                         _auto_cleanup "$target_srt" "$existing_srt"
-                    [[ "$embed_srt" != "$target_srt" ]] && _auto_cleanup "$embed_srt"
+                    [[ -n "$mix_file" ]] && _auto_cleanup "$mix_file"
                 fi
                 [[ -n "$batch_state" ]] && echo "$base_name" >> "$batch_state"
                 continue
@@ -2949,28 +3002,72 @@ _auto_mix() {
         done
     fi
 
+    # Priority 3.5: auto-detect mix language from video audio tracks when --mix without language
+    local _effective_mix_lang="${MIX_LANG:-}"
+    if [[ -z "$mix_source" && -z "$_effective_mix_lang" ]] && command -v ffprobe &>/dev/null; then
+        local _aidx _alang
+        while IFS=',' read -r _aidx _alang; do
+            _alang=$(echo "$_alang" | tr -d '[:space:]')
+            [[ -z "$_alang" || "$_alang" == "und" ]] && continue
+            _alang=$(_iso639_2_to_lang "$_alang")
+            [[ "$_alang" == "$target" ]] && continue
+            _effective_mix_lang="$_alang"
+            info "Auto-detected mix language: $_effective_mix_lang"
+            break
+        done < <(ffprobe -v error -select_streams a -show_entries stream=index:stream_tags=language -of csv=p=0 "$video" 2>/dev/null)
+    fi
+
+    # Priority 4: try to download subtitles in the mix language
+    if [[ -z "$mix_source" && -n "$_effective_mix_lang" ]]; then
+        local _mix_clean_name
+        _mix_clean_name=$(basename "$video" | sed 's/\.[^.]*$//')
+        _mix_clean_name=$(echo "$_mix_clean_name" | sed -E 's/\[[^]]*\]//g; s/\([^)]*\)//g; s/([Ss][0-9]+[Ee][0-9]+)[-. ].*/\1/')
+        _mix_clean_name=$(echo "$_mix_clean_name" | tr '.' ' ')
+        parse_smart_query "$_mix_clean_name" 2>/dev/null
+        if [[ -n "$PARSED_TITLE" || -n "$PARSED_IMDB" ]]; then
+            info "Downloading $_effective_mix_lang subtitles for mix..."
+            local _mix_results="" _mix_url=""
+            if _mix_results=$(search_all_sources "$PARSED_TITLE" "$_effective_mix_lang" "$PARSED_IMDB" "$PARSED_SEASON" "$PARSED_EPISODE" 2>/dev/null); then
+                _mix_url=$(echo "$_mix_results" | head -1)
+                if [[ -n "$_mix_url" ]]; then
+                    local _mix_dl="${dir_name}/${name_no_ext}.${_effective_mix_lang}.srt"
+                    if download_subtitle "$_mix_url" "$_mix_dl" 2>/dev/null && [[ -s "$_mix_dl" ]]; then
+                        log "Downloaded ($_effective_mix_lang) for mix: $(basename "$_mix_dl")"
+                        mix_source="$_mix_dl"
+                        mix_lang="$_effective_mix_lang"
+                    else
+                        debug "Mix: download failed for $_effective_mix_lang" || true
+                    fi
+                fi
+            fi
+        fi
+    fi
+
     if [[ -z "$mix_source" ]]; then
         debug "Mix: no source subtitle found (need a subtitle in another language)" || true
         return 1
     fi
 
-    # Sync mix_source so both files drop the same blocks (ffsubsync may skip negative timestamps)
-    _auto_sync "$video" "$mix_source" "$mix_lang" 2>/dev/null
+    # Sync mix_source against target_srt (subtitle-to-subtitle) for block alignment.
+    # This ensures both files have compatible timing for block-by-block pairing.
+    _auto_sync "$target_srt" "$mix_source" "$mix_lang"
 
     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
-    # Default: target lang on top (normal), source lang on bottom (italic). --swap reverses.
-    local do_swap=false
-    [[ "$SWAP_MIX" == "true" ]] && do_swap=true
+    # Default: swap mode — mix/learning lang on top (normal), target/native on bottom (italic).
+    # --swap reverses.
+    local do_swap=true
+    [[ "$SWAP_MIX" == "true" ]] && do_swap=false
     if [[ "$do_swap" == "true" ]]; then
         info "Mixing: $mix_lang (top) + $target (bottom, italic)"
     else
         info "Mixing: $target (top) + $mix_lang (bottom, italic)"
     fi
     # Both files synced: same block alignment, target_srt timestamps as reference
-    _mix_subtitles "$target_srt" "$mix_source" "$mix_output" "$do_swap"
+    _mix_subtitles "$target_srt" "$mix_source" "$mix_output" "$do_swap" "timestamp"
     log "Mixed: $(basename "$mix_output")"
-    # Output lang|path so caller can parse both (avoids subshell variable loss)
-    echo "${mix_lang}|${mix_output}"
+
+    # Output lang|mix_path|source_path — caller embeds all three and handles cleanup
+    echo "${mix_lang}|${mix_output}|${mix_source}"
     return 0
 }
 
@@ -2984,6 +3081,19 @@ _lang_to_iso639_2() {
         pl|pol)     echo "pol" ;; sv|swe)     echo "swe" ;; da|dan)     echo "dan" ;;
         fi|fin)     echo "fin" ;; no|nor)     echo "nor" ;; tr|tur)     echo "tur" ;;
         *)          echo "$1" ;;
+    esac
+}
+
+# Helper: map 3-letter ISO 639-2 code back to 2-letter code
+_iso639_2_to_lang() {
+    case "$1" in
+        fre|fra) echo "fr" ;; eng)     echo "en" ;; spa)     echo "es" ;;
+        ger|deu) echo "de" ;; ita)     echo "it" ;; por)     echo "pt" ;;
+        rus)     echo "ru" ;; ara)     echo "ar" ;; jpn)     echo "ja" ;;
+        kor)     echo "ko" ;; chi|zho) echo "zh" ;; dut|nld) echo "nl" ;;
+        pol)     echo "pl" ;; swe)     echo "sv" ;; dan)     echo "da" ;;
+        fin)     echo "fi" ;; nor)     echo "no" ;; tur)     echo "tr" ;;
+        *)       echo "$1" ;;
     esac
 }
 
@@ -3319,6 +3429,35 @@ _auto_embed() {
         rm -f "$tmp_video"
         return 1
     fi
+}
+
+# Helper: embed target subtitle + optional source lang + optional mix as separate tracks
+# Usage: _auto_embed_with_mix <video> <target_srt> <target_lang> [mix_srt] [mix_title] [source_srt] [source_lang]
+_auto_embed_with_mix() {
+    local video="$1" target_srt="$2" target_lang="$3"
+    local mix_srt="${4:-}" mix_title="${5:-}"
+    local source_srt="${6:-}" source_lang="${7:-}"
+
+    # Embed target subtitle first (handles --strip-existing)
+    _auto_embed "$video" "$target_srt" "$target_lang" "" || return 1
+
+    local _save_strip="$STRIP_EXISTING" _save_force="$FORCE_EMBED"
+    STRIP_EXISTING=false
+    FORCE_EMBED=true
+
+    # Embed mix source language subtitle as additional track if available
+    if [[ -n "$source_srt" && -f "$source_srt" && -n "$source_lang" ]]; then
+        _auto_embed "$video" "$source_srt" "$source_lang" ""
+    fi
+
+    # Embed mix subtitle as additional track if available
+    if [[ -n "$mix_srt" && -f "$mix_srt" && -n "$mix_title" ]]; then
+        _auto_embed "$video" "$mix_srt" "mul" "$mix_title"
+    fi
+
+    STRIP_EXISTING="$_save_strip"
+    FORCE_EMBED="$_save_force"
+    return 0
 }
 
 # ── Command: translate ───────────────────────────────────────────────────────
@@ -3761,12 +3900,14 @@ cmd_merge() {
 }
 
 # ── Shared: mix two SRT files into one bilingual ─────────────────────────────
-# Usage: _mix_subtitles <primary> <secondary> <output> [swap]
+# Usage: _mix_subtitles <primary> <secondary> <output> [swap] [match_mode]
 # Default: primary text on top (white), secondary text in grey. Timestamps from primary.
 # swap=true: secondary text on top (white), primary text in grey. Timestamps still from primary.
 #   Use swap when primary has synced timestamps but secondary has the learning-language text.
+# match_mode: "block" (default) = pair by block index; "timestamp" = pair by time overlap.
+#   Use "timestamp" when files come from different sources with different block structures.
 _mix_subtitles() {
-    local primary="$1" secondary="$2" output="$3" swap="${4:-false}"
+    local primary="$1" secondary="$2" output="$3" swap="${4:-false}" match_mode="${5:-block}"
     local tmp_pri="$CACHE_DIR/_mix_pri_$$.txt"
     local tmp_sec="$CACHE_DIR/_mix_sec_$$.txt"
     mkdir -p "$CACHE_DIR"
@@ -3796,60 +3937,111 @@ _mix_subtitles() {
     _mix_parse_srt "$primary" > "$tmp_pri"
     _mix_parse_srt "$secondary" > "$tmp_sec"
 
-    # Read parsed lines into arrays (avoids O(n²) sed per iteration)
-    local -a pri_lines=() sec_lines=()
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        pri_lines+=("$line")
-    done < "$tmp_pri"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        sec_lines+=("$line")
-    done < "$tmp_sec"
+    # Merge primary + secondary. Two modes:
+    # - "block": pair by block index (same source, same structure)
+    # - "timestamp": pair by time overlap (different sources, different block counts)
+    awk -v swap="$swap" -v mode="$match_mode" '
+    function ts2ms(ts,   p) {
+        split(ts, p, /[:,]/)
+        return (p[1] * 3600 + p[2] * 60 + p[3]) * 1000 + p[4]
+    }
+    function ms2ts(ms,   h, m, s, f) {
+        h = int(ms / 3600000); ms -= h * 3600000
+        m = int(ms / 60000);   ms -= m * 60000
+        s = int(ms / 1000);    f = ms - s * 1000
+        return sprintf("%02d:%02d:%02d,%03d", h, m, s, f)
+    }
+    function mymax(a, b) { return a > b ? a : b }
+    function mymin(a, b) { return a < b ? a : b }
 
-    local count_pri=${#pri_lines[@]} count_sec=${#sec_lines[@]} max_count
-    max_count=$count_pri
-    [[ $count_sec -gt $max_count ]] && max_count=$count_sec
+    BEGIN { np = 0; ns = 0; n = 0; SEP = "<_NL_>" }
 
-    local idx=0
-    : > "$output"
-    while [[ $idx -lt $max_count ]]; do
-        local pri_line="${pri_lines[$idx]:-}" sec_line="${sec_lines[$idx]:-}"
-        ((idx++)) || true
+    NR == FNR {
+        np++
+        split($0, f, "|")
+        ps[np] = ts2ms(f[1]); pe[np] = ts2ms(f[2])
+        pt[np] = f[3]; prs[np] = f[1]; pre[np] = f[2]
+        next
+    }
+    {
+        ns++
+        split($0, f, "|")
+        ss[ns] = ts2ms(f[1]); se[ns] = ts2ms(f[2])
+        st[ns] = f[3]; srs[ns] = f[1]; sre[ns] = f[2]
+    }
 
-        local start="" end_ts="" text="" sec_text=""
+    END {
+        if (mode == "timestamp") {
+            # ── Timestamp overlap matching (for files from different sources) ──
+            for (j = 1; j <= ns; j++) sec_used[j] = 0
+            sptr = 1
+            for (i = 1; i <= np; i++) {
+                while (sptr <= ns && se[sptr] <= ps[i]) sptr++
+                best_ov = 0; best_j = 0
+                for (j = sptr; j <= ns; j++) {
+                    if (ss[j] >= pe[i]) break
+                    ov = mymin(pe[i], se[j]) - mymax(ps[i], ss[j])
+                    if (ov > best_ov) { best_ov = ov; best_j = j }
+                }
+                if (best_j > 0) sec_used[best_j] = 1
+                n++
+                out_ms[n] = ps[i]; out_rs[n] = prs[i]; out_re[n] = pre[i]
+                out_pt[n] = pt[i]; out_st[n] = (best_j > 0) ? st[best_j] : ""
+            }
+            # Append unmatched secondary blocks
+            for (j = 1; j <= ns; j++) {
+                if (!sec_used[j]) {
+                    n++
+                    out_ms[n] = ss[j]; out_rs[n] = srs[j]; out_re[n] = sre[j]
+                    out_pt[n] = ""; out_st[n] = st[j]
+                }
+            }
+            # Sort by start timestamp
+            for (i = 2; i <= n; i++) {
+                km = out_ms[i]; krs = out_rs[i]; kre = out_re[i]; kp = out_pt[i]; ks = out_st[i]
+                j = i - 1
+                while (j >= 1 && out_ms[j] > km) {
+                    out_ms[j+1]=out_ms[j]; out_rs[j+1]=out_rs[j]; out_re[j+1]=out_re[j]
+                    out_pt[j+1]=out_pt[j]; out_st[j+1]=out_st[j]; j--
+                }
+                out_ms[j+1]=km; out_rs[j+1]=krs; out_re[j+1]=kre; out_pt[j+1]=kp; out_st[j+1]=ks
+            }
+        } else {
+            # ── Block-by-block matching (default — same source, same structure) ──
+            max_n = (np > ns) ? np : ns
+            for (i = 1; i <= max_n; i++) {
+                n++
+                if (i <= np) { out_rs[n] = prs[i]; out_re[n] = pre[i]; out_pt[n] = pt[i] }
+                else         { out_rs[n] = srs[i]; out_re[n] = sre[i]; out_pt[n] = "" }
+                if (i <= ns) { out_st[n] = st[i] }
+                else         { out_st[n] = "" }
+                # If primary block missing, use secondary timestamps
+                if (i > np && i <= ns) { out_rs[n] = srs[i]; out_re[n] = sre[i] }
+            }
+        }
 
-        if [[ -n "$pri_line" ]]; then
-            IFS='|' read -r start end_ts text <<< "$pri_line"
-        fi
+        # Emit output
+        for (i = 1; i <= n; i++) {
+            text = out_pt[i]; sec_text = out_st[i]
+            gsub(SEP, "\n", text)
+            gsub(SEP, "\n", sec_text)
 
-        if [[ -n "$sec_line" ]]; then
-            local _sec_start="" _sec_end=""
-            IFS='|' read -r _sec_start _sec_end sec_text <<< "$sec_line"
-            # If primary block is missing, use secondary timestamps
-            if [[ -z "$start" ]]; then
-                start="$_sec_start"
-                end_ts="$_sec_end"
-            fi
-        fi
+            if (swap == "true") { top = sec_text; bot = text }
+            else                { top = text; bot = sec_text }
 
-        # Convert sentinel back to real newlines
-        text="${text//<_NL_>/$'\n'}"
-        sec_text="${sec_text//<_NL_>/$'\n'}"
+            if (top != "" && bot != "")
+                printf "%d\n%s --> %s\n%s\n<i>%s</i>\n\n", i, out_rs[i], out_re[i], top, bot
+            else if (top != "")
+                printf "%d\n%s --> %s\n%s\n\n", i, out_rs[i], out_re[i], top
+            else if (bot != "")
+                printf "%d\n%s --> %s\n<i>%s</i>\n\n", i, out_rs[i], out_re[i], bot
+        }
+    }
+    ' "$tmp_pri" "$tmp_sec" > "$output"
 
-        # Determine display order: top_text (normal) + bottom_text (italic)
-        local top_text="$text" bottom_text="$sec_text"
-        [[ "$swap" == "true" ]] && top_text="$sec_text" && bottom_text="$text"
-
-        # Top: normal text (subtitle to read), Bottom: italic (original language reference)
-        if [[ -n "$top_text" && -n "$bottom_text" ]]; then
-            printf '%d\n%s --> %s\n%s\n<i>%s</i>\n\n' "$idx" "$start" "$end_ts" "$top_text" "$bottom_text" >> "$output"
-        elif [[ -n "$top_text" ]]; then
-            printf '%d\n%s --> %s\n%s\n\n' "$idx" "$start" "$end_ts" "$top_text" >> "$output"
-        elif [[ -n "$bottom_text" ]]; then
-            printf '%d\n%s --> %s\n<i>%s</i>\n\n' "$idx" "$start" "$end_ts" "$bottom_text" >> "$output"
-        fi
-    done
-
-    info "$idx subtitles mixed"
+    local count
+    count=$(grep -c '^[0-9]\+$' "$output" 2>/dev/null || echo 0)
+    info "$count subtitles mixed"
     rm -f "$tmp_pri" "$tmp_sec"
 }
 
@@ -4491,7 +4683,7 @@ COMPLETIONS_SHELL=""
 cmd_completions() {
     local shell="${COMPLETIONS_SHELL:-bash}"
     local commands="auto transcribe get search batch translate info clean sync autosync convert merge mix fix extract embed strip text diff config check providers sources completions manpage"
-    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --strip-existing --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --no-resume --keep-files --mix --mix-lang --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
+    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --strip-existing --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --resume --keep-files --mix --mix-lang --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
 
     case "$shell" in
         bash)
@@ -4623,7 +4815,7 @@ _subtool() {
                         '--max-parallel[Max parallel]:n:' \\
                         '--no-transcribe[Disable transcription]' \\
                         '--force-transcribe[Force transcription]' \\
-                        '--no-resume[Ignore batch state]' \\
+                        '--resume[Resume batch from previous state]' \\
                         '--keep-files[Keep intermediate files]' \\
                         '--auto[Auto-select result]' \\
                         '--dry-run[Preview only]' \\
@@ -4710,7 +4902,7 @@ complete -c subtool -l skip-steps -d 'Skip steps' -x -a 'download translate sync
 complete -c subtool -l max-parallel -d 'Max parallel' -x
 complete -c subtool -l no-transcribe -d 'Disable transcription'
 complete -c subtool -l force-transcribe -d 'Force transcription'
-complete -c subtool -l no-resume -d 'Ignore batch state'
+complete -c subtool -l resume -d 'Resume batch from previous state'
 complete -c subtool -l keep-files -d 'Keep intermediate files'
 complete -c subtool -l auto -d 'Auto-select result'
 complete -c subtool -l dry-run -d 'Preview only'
@@ -4932,8 +5124,8 @@ Enable dual-language mix in auto mode
 \fB\-\-mix\-lang\fR \fIlang\fR
 Learning language for mix top (implies \-\-mix)
 .TP
-\fB\-\-no\-resume\fR
-Ignore batch state and re-process all files
+\fB\-\-resume\fR
+Resume batch from previous state (skip already-completed files)
 .TP
 \fB\-\-keep\-files\fR
 Keep intermediate subtitle files
@@ -5056,7 +5248,15 @@ parse_args() {
             --merge-with)  MERGE_FILE="$2"; shift 2 ;;
             --diff-with)   DIFF_FILE="$2"; shift 2 ;;
             --mix-with)    MIX_FILE="$2"; shift 2 ;;
-            --mix)         MIX_MODE=true; shift ;;
+            --mix)
+                MIX_MODE=true
+                # --mix [lang] — optional language code (2-3 chars, not a flag)
+                if [[ -n "${2:-}" && "${2:0:1}" != "-" && ${#2} -le 3 ]]; then
+                    MIX_LANG="$2"; shift 2
+                else
+                    shift
+                fi
+                ;;
             --mix-lang)    MIX_LANG="$2"; MIX_MODE=true; shift 2 ;;
             --swap)        SWAP_MIX=true; shift ;;
             --playlist)    PLAYLIST_FILE="$2"; shift 2 ;;
@@ -5075,7 +5275,8 @@ parse_args() {
             --claude-effort) CLAUDE_EFFORT="$2"; shift 2 ;;
             --skip-steps) SKIP_STEPS="$2"; shift 2 ;;
             --max-parallel) TRANSLATE_MAX_PARALLEL="$2"; shift 2 ;;
-            --no-resume) NO_RESUME=true; shift ;;
+            --resume) NO_RESUME=false; shift ;;
+            --no-resume) shift ;;
             --keep-files)  KEEP_FILES=true; shift ;;
             --auto)        AUTO_SELECT=true; shift ;;
             --embed)       AUTO_EMBED=true; shift ;;

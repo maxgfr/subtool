@@ -1093,6 +1093,134 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "embed with mix (target + source + mix as three tracks)"
+
+if command -v ffmpeg &>/dev/null; then
+    # Create a clean test video (no subtitles)
+    mix_embed_video="$TMP_DIR/mix_embed_test.mkv"
+    ffmpeg -v quiet -f lavfi -i "color=black:s=320x240:d=1" \
+        -c:v libx264 -preset ultrafast \
+        "$mix_embed_video" -y 2>/dev/null
+
+    if [[ -f "$mix_embed_video" ]]; then
+        # Create mix SRT file
+        "$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+        mix_sub="$TMP_DIR/mix_embed_test.mix.srt"
+        cp "$TMP_DIR/basic.mix.srt" "$mix_sub"
+
+        # Embed 3 tracks sequentially: FR, DE, Mix (simulates _auto_embed_with_mix)
+        # Track 1: French subtitle
+        "$SUBSYNC" embed "$mix_embed_video" --sub "$FIXTURES/basic_fr.srt" -l fr -o "$TMP_DIR" 2>&1 >/dev/null
+        embed_result="$TMP_DIR/mix_embed_test.subbed.mkv"
+
+        if [[ -s "$embed_result" ]]; then
+            # Track 2: German subtitle (source language)
+            mv "$embed_result" "$mix_embed_video"
+            "$SUBSYNC" embed "$mix_embed_video" --sub "$FIXTURES/basic.srt" -l de -o "$TMP_DIR" 2>&1 >/dev/null
+            embed_result="$TMP_DIR/mix_embed_test.subbed.mkv"
+
+            if [[ -s "$embed_result" ]]; then
+                # Track 3: Mix subtitle
+                mv "$embed_result" "$mix_embed_video"
+                "$SUBSYNC" embed "$mix_embed_video" --sub "$mix_sub" -l mul -o "$TMP_DIR" 2>&1 >/dev/null
+                embed_result="$TMP_DIR/mix_embed_test.subbed.mkv"
+
+                if [[ -s "$embed_result" ]]; then
+                    sub_count=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$embed_result" 2>/dev/null | jq '.streams | length' 2>/dev/null || echo 0)
+                    if [[ "$sub_count" -eq 3 ]]; then
+                        assert "embed+mix: three subtitle tracks present" 0
+                    else
+                        assert "embed+mix: three subtitle tracks present (got $sub_count)" 1
+                    fi
+
+                    # Verify track order: FR, DE, Mix
+                    first_lang=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$embed_result" 2>/dev/null | jq -r '.streams[0].tags.language // "und"' 2>/dev/null || echo "und")
+                    second_lang=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$embed_result" 2>/dev/null | jq -r '.streams[1].tags.language // "und"' 2>/dev/null || echo "und")
+                    if [[ "$first_lang" == "fre" || "$first_lang" == "fr" ]]; then
+                        assert "embed+mix: track 1 is French" 0
+                    else
+                        assert "embed+mix: track 1 is French (got $first_lang)" 1
+                    fi
+                    if [[ "$second_lang" == "ger" || "$second_lang" == "de" ]]; then
+                        assert "embed+mix: track 2 is German" 0
+                    else
+                        assert "embed+mix: track 2 is German (got $second_lang)" 1
+                    fi
+                else
+                    assert "embed+mix: third embed (mix) succeeded" 1
+                fi
+            else
+                assert "embed+mix: second embed (DE) succeeded" 1
+            fi
+        else
+            assert "embed+mix: first embed (FR) succeeded" 1
+        fi
+    fi
+
+    # Test strip + embed three tracks (simulates _auto_embed_with_mix with --strip-existing)
+    section "embed with mix (strip + three tracks)"
+
+    # Create a video with one existing subtitle (German)
+    strip_video="$TMP_DIR/strip_mix_test.mkv"
+    ffmpeg -v quiet -f lavfi -i "color=black:s=320x240:d=1" \
+        -i "$FIXTURES/basic.srt" \
+        -c:v libx264 -preset ultrafast -c:s srt \
+        -metadata:s:s:0 language=de \
+        "$strip_video" -y 2>/dev/null
+
+    if [[ -f "$strip_video" ]]; then
+        # Verify it has 1 subtitle track initially
+        initial_count=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$strip_video" 2>/dev/null | jq '.streams | length' 2>/dev/null || echo 0)
+        assert "strip+mix setup: video has initial subtitle" "$([ "$initial_count" -eq 1 ] && echo 0 || echo 1)"
+
+        # Strip existing subtitles in-place
+        "$SUBSYNC" strip "$strip_video" 2>&1 >/dev/null
+
+        after_strip_count=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$strip_video" 2>/dev/null | jq '.streams | length' 2>/dev/null || echo 0)
+        assert "strip+mix: subtitles removed" "$([ "$after_strip_count" -eq 0 ] && echo 0 || echo 1)"
+
+        # Embed 3 tracks: FR, DE, Mix
+        "$SUBSYNC" embed "$strip_video" --sub "$FIXTURES/basic_fr.srt" -l fr -o "$TMP_DIR" 2>&1 >/dev/null
+        fr_out="$TMP_DIR/strip_mix_test.subbed.mkv"
+
+        if [[ -s "$fr_out" ]]; then
+            mv "$fr_out" "$strip_video"
+            "$SUBSYNC" embed "$strip_video" --sub "$FIXTURES/basic.srt" -l de -o "$TMP_DIR" 2>&1 >/dev/null
+            de_out="$TMP_DIR/strip_mix_test.subbed.mkv"
+
+            if [[ -s "$de_out" ]]; then
+                mix_sub2="$TMP_DIR/strip_mix_test.mix.srt"
+                cp "$TMP_DIR/basic.mix.srt" "$mix_sub2" 2>/dev/null || {
+                    "$SUBSYNC" mix "$FIXTURES/basic.srt" --mix-with "$FIXTURES/basic_fr.srt" -o "$TMP_DIR" 2>&1 >/dev/null
+                    cp "$TMP_DIR/basic.mix.srt" "$mix_sub2"
+                }
+
+                mv "$de_out" "$strip_video"
+                "$SUBSYNC" embed "$strip_video" --sub "$mix_sub2" -l mul -o "$TMP_DIR" 2>&1 >/dev/null
+                final_out="$TMP_DIR/strip_mix_test.subbed.mkv"
+
+                if [[ -s "$final_out" ]]; then
+                    final_count=$(ffprobe -v quiet -print_format json -show_streams -select_streams s "$final_out" 2>/dev/null | jq '.streams | length' 2>/dev/null || echo 0)
+                    if [[ "$final_count" -eq 3 ]]; then
+                        assert "strip+mix: final video has 3 subtitle tracks" 0
+                    else
+                        assert "strip+mix: final video has 3 subtitle tracks (got $final_count)" 1
+                    fi
+                else
+                    assert "strip+mix: mix embed succeeded" 1
+                fi
+            else
+                assert "strip+mix: DE embed succeeded" 1
+            fi
+        else
+            assert "strip+mix: French embed succeeded" 1
+        fi
+    fi
+else
+    printf "  ${YELLOW}SKIP${NC}  embed with mix: ffmpeg not available\n"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "Google translate text extraction"
 
 # Test that text extraction skips indices, timestamps, blank lines, keeps only text
@@ -1780,6 +1908,51 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "auto --mix with embedded subtitles"
+
+if command -v ffmpeg &>/dev/null; then
+    # Create a video with TWO embedded subtitle tracks (DE + FR)
+    auto_mix_dir="$TMP_DIR/auto_mix_test"
+    mkdir -p "$auto_mix_dir"
+    auto_mix_video="$auto_mix_dir/test_auto_mix.mkv"
+    ffmpeg -v quiet -f lavfi -i "color=black:s=320x240:d=1" \
+        -i "$FIXTURES/basic.srt" -i "$FIXTURES/basic_fr.srt" \
+        -c:v libx264 -preset ultrafast -c:s srt \
+        -map 0 -map 1 -map 2 \
+        -metadata:s:s:0 language=de -metadata:s:s:0 title=German \
+        -metadata:s:s:1 language=fr -metadata:s:s:1 title=French \
+        "$auto_mix_video" -y 2>/dev/null
+
+    if [[ -f "$auto_mix_video" ]]; then
+        # auto --mix -l fr: should extract FR, then also extract DE for mix
+        out=$("$SUBSYNC" auto "$auto_mix_video" -l fr --mix --no-embed --skip-steps sync 2>&1 || true)
+        auto_mix_output="$auto_mix_dir/test_auto_mix.mix.srt"
+        if [[ -f "$auto_mix_output" ]]; then
+            assert "auto --mix embedded: mix file created" 0
+            assert_file_contains "auto --mix embedded: FR text present" "$auto_mix_output" "Bienvenue"
+            assert_file_contains "auto --mix embedded: DE text present" "$auto_mix_output" "Willkommen"
+        else
+            assert "auto --mix embedded: mix file created (got: $(ls "$auto_mix_dir"/*.srt 2>/dev/null | xargs -I{} basename {} | tr '\n' ' '))" 1
+        fi
+
+        # Also test with explicit --mix-lang
+        rm -f "$auto_mix_dir"/*.srt 2>/dev/null
+        out=$("$SUBSYNC" auto "$auto_mix_video" -l fr --mix-lang de --no-embed --skip-steps sync 2>&1 || true)
+        auto_mix_output2="$auto_mix_dir/test_auto_mix.mix.srt"
+        if [[ -f "$auto_mix_output2" ]]; then
+            assert "auto --mix-lang embedded: mix file created" 0
+            assert_file_contains "auto --mix-lang embedded: DE text present" "$auto_mix_output2" "Willkommen"
+        else
+            assert "auto --mix-lang embedded: mix file created" 1
+        fi
+    else
+        assert "auto --mix embedded: test video created" 1
+    fi
+else
+    printf "  ${YELLOW}SKIP${NC}  auto --mix embedded: ffmpeg not available\n"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "error messages"
 
 # embed without --sub
@@ -1824,7 +1997,7 @@ assert_output_contains "help: strip command" "$out" "strip.*Remove.*subtitle"
 # ══════════════════════════════════════════════════════════════════════════════
 section "strip-existing flag"
 
-# --strip-existing implies --no-resume: batch state should be cleared
+# --strip-existing: batch state should be cleared (default behavior, no resume)
 strip_test_dir="$TMP_DIR/strip_test"
 mkdir -p "$strip_test_dir"
 # Create a fake batch state file
@@ -2461,7 +2634,7 @@ out=$("$SUBSYNC" --help 2>&1)
 assert_output_contains "help: --claude-effort" "$out" "\-\-claude-effort"
 assert_output_contains "help: --skip-steps" "$out" "\-\-skip-steps"
 assert_output_contains "help: --max-parallel" "$out" "\-\-max-parallel"
-assert_output_contains "help: --no-resume" "$out" "\-\-no-resume"
+assert_output_contains "help: --resume" "$out" "\-\-resume"
 
 # ── New commands in help ─────────────────────────────────────────────────────
 assert_output_contains "help: text command" "$out" "text.*Export plain text"
