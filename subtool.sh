@@ -2515,7 +2515,7 @@ cmd_auto() {
         info "Directory: $SCAN_DIR"
         while IFS= read -r -d '' vf; do
             video_files+=("$vf")
-        done < <(find "$SCAN_DIR" -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" -o -iname "*.webm" -o -iname "*.m4v" -o -iname "*.mpg" -o -iname "*.mpeg" -o -iname "*.ts" \) -print0 2>/dev/null | sort -z)
+        done < <(find "$SCAN_DIR" -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" -o -iname "*.webm" -o -iname "*.m4v" -o -iname "*.mpg" -o -iname "*.mpeg" -o -iname "*.ts" \) ! -name "*.tmp.*" ! -name "*.stripped.*" -print0 2>/dev/null | sort -z)
     fi
 
     total=${#video_files[@]}
@@ -2553,9 +2553,9 @@ cmd_auto() {
                     mix_source_lang="$_ml"
                     [[ "$mix_source_srt" == "$mix_file" ]] && mix_source_srt=""
                     if [[ "$SWAP_MIX" == "true" ]]; then
-                        mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
-                    else
                         mix_embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                    else
+                        mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
                     fi
                 }
             fi
@@ -2639,9 +2639,9 @@ cmd_auto() {
                             mix_source_lang="$_ml"
                             [[ "$mix_source_srt" == "$mix_file" ]] && mix_source_srt=""
                             if [[ "$SWAP_MIX" == "true" ]]; then
-                                mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
-                            else
                                 mix_embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                            else
+                                mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
                             fi
                         }
                     fi
@@ -2721,15 +2721,15 @@ cmd_auto() {
                                 mix_source_lang="$_ml"
                                 [[ "$mix_source_srt" == "$mix_file" ]] && mix_source_srt=""
                                 if [[ "$SWAP_MIX" == "true" ]]; then
-                                    mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
-                                else
                                     mix_embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                                else
+                                    mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
                                 fi
                             }
                         fi
                         if $do_embed && [[ "$_skip" != *",embed,"* ]]; then
-                            _auto_embed_with_mix "$video_file" "$target_srt" "$target" "$mix_file" "$mix_embed_title" "$mix_source_srt" "$mix_source_lang"
-                            _auto_cleanup "$target_srt"
+                            _auto_embed_with_mix "$video_file" "$target_srt" "$target" "$mix_file" "$mix_embed_title" "$mix_source_srt" "$mix_source_lang" && \
+                                _auto_cleanup "$target_srt"
                             [[ -n "$mix_file" ]] && _auto_cleanup "$mix_file"
                             [[ -n "$mix_source_srt" ]] && _auto_cleanup "$mix_source_srt"
                         fi
@@ -2836,9 +2836,9 @@ cmd_auto() {
                                 mix_source_lang="$_ml"
                                 [[ "$mix_source_srt" == "$mix_file" ]] && mix_source_srt=""
                                 if [[ "$SWAP_MIX" == "true" ]]; then
-                                    mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
-                                else
                                     mix_embed_title="Mix $(_lang_title "$_ml")-$(_lang_title "$target")"
+                                else
+                                    mix_embed_title="Mix $(_lang_title "$target")-$(_lang_title "$_ml")"
                                 fi
                             }
                         fi
@@ -2890,9 +2890,9 @@ cmd_auto() {
                     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
                     local src_lang="${existing_lang:-}"
                     # Both files synced: same block count, matching timestamps
-                    # Default: swap mode — source/learning lang on top, target/native on bottom (italic).
-                    local do_swap=true
-                    [[ "$SWAP_MIX" == "true" ]] && do_swap=false
+                    # Default: target lang on top (normal), source/learning lang on bottom (italic).
+                    local do_swap=false
+                    [[ "$SWAP_MIX" == "true" ]] && do_swap=true
                     if [[ "$do_swap" == "true" ]]; then
                         info "Mixing: $src_lang (top) + $target (bottom, italic)"
                     else
@@ -2924,6 +2924,8 @@ cmd_auto() {
                 continue
             else
                 warn "Translation failed: $base_name"
+                # Clean up downloaded fallback subtitle on translation failure
+                [[ -n "$existing_srt" ]] && _auto_cleanup "$existing_srt"
             fi
         elif [[ -z "$existing_srt" ]]; then
             warn "No subtitles for: $base_name"
@@ -3053,10 +3055,10 @@ _auto_mix() {
     _auto_sync "$target_srt" "$mix_source" "$mix_lang"
 
     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
-    # Default: swap mode — mix/learning lang on top (normal), target/native on bottom (italic).
+    # Default: target lang on top (normal), mix/learning lang on bottom (italic).
     # --swap reverses.
-    local do_swap=true
-    [[ "$SWAP_MIX" == "true" ]] && do_swap=false
+    local do_swap=false
+    [[ "$SWAP_MIX" == "true" ]] && do_swap=true
     if [[ "$do_swap" == "true" ]]; then
         info "Mixing: $mix_lang (top) + $target (bottom, italic)"
     else

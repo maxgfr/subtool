@@ -50,7 +50,7 @@ All providers send subtitles in a single API call by default (threshold 50k line
 
 All-in-one: download + translate + sync (ffsubsync) + embed (ffmpeg). Pass a file, directory, or playlist (.txt) as positional argument (auto-detected). Embed is on by default when ffmpeg is available (`--no-embed` to disable). Sync is automatic via ffsubsync. Source language is auto-detected from subtitle filename. Falls back to transcription (speech-to-text) when no subtitles are found online (`--no-transcribe` to disable, `--force-transcribe` to skip download and always transcribe). Supports `--dry-run` to preview actions without executing. `--skip-steps download,translate,sync,mix,embed` to skip specific steps. Directory mode tracks completed files in `.subtool_batch_state` (`--resume` to skip already-completed files). Playlist mode (`--playlist file.txt` or auto-detected from `.txt` extension): reads one video path per line (comments with `#`, blank lines ignored, relative paths resolved from playlist directory).
 
-Supports `--mix` / `--mix <lang>` to create dual-language subtitles for language learning. `--mix de` sets the learning language explicitly (same as `--mix-lang de`). `--mix` alone auto-detects from the video's audio tracks. Learning language on top (bold), native language in italic below. Output: `.mix.srt`. In auto mode, three subtitle tracks are embedded: target language, source/mix language, and bilingual mix. Track title is set to "Mix German-French" (etc.) when embedding. Mix source subtitles are downloaded automatically if not available locally or embedded. After embedding, intermediate SRT files are cleaned up (respects `--keep-files`).
+Supports `--mix` / `--mix <lang>` to create dual-language subtitles for language learning. `--mix de` sets the learning language explicitly (same as `--mix-lang de`). `--mix` alone auto-detects from the video's audio tracks. Default display order: target language (`-l`) on top (normal), mix/learning language on bottom (italic). `--swap` reverses this order. Output: `.mix.srt`. In auto mode, three subtitle tracks are embedded: target language, source/mix language, and bilingual mix. Track title is set to "Mix French-German" (top-bottom order) when embedding. Mix source subtitles are downloaded automatically if not available locally or embedded. After embedding, intermediate SRT files are cleaned up (respects `--keep-files`).
 
 `_mix_subtitles()` supports two match modes: `block` (default, pairs by index — for files from same source) and `timestamp` (pairs by time overlap — for files from different sources with different block structures). `_auto_mix()` uses `timestamp` mode; `cmd_mix` and the translate path use `block` mode. The mix source is synced against the target subtitle (subtitle-to-subtitle via ffsubsync) for block alignment before timestamp matching.
 
@@ -72,7 +72,7 @@ Remove all subtitle tracks from a video file. Uses `ffmpeg -map 0 -map -0:s -c c
 
 ### `mix` command
 
-Mix two subtitle files into one dual-language file for language learning. Learning language displayed in bold (top), native language in grey italic (bottom). Output: `.mix.srt`.
+Mix two subtitle files into one dual-language file for language learning. Default display: target/native language on top (normal), mix/learning language on bottom (italic). `--swap` reverses the order. Output: `.mix.srt`.
 
 Two modes:
 - `subtool mix movie.de.srt --mix-with movie.fr.srt` — from two existing files
@@ -130,7 +130,7 @@ Generate a man page in troff format. Usage: `subtool manpage | man -l -`.
 - `progress()` — visual progress bar for long operations (translation chunks, batch processing)
 - `_fuzzy_normalize()` — strips accents (via `iconv`), collapses separators, removes punctuation for typo-tolerant search
 - `_mix_subtitles()` — merges two SRT files into one bilingual. Two match modes: `block` (by index, default) and `timestamp` (by time overlap, for different sources). Supports swap mode for display order.
-- `_auto_mix()` — finds/downloads source subtitle + mixes with target in auto flow. Uses swap mode (learning lang on top) and timestamp matching. Returns `lang|mix_path|source_path` on stdout
+- `_auto_mix()` — finds/downloads source subtitle + mixes with target in auto flow. Default: target lang on top (normal), mix lang on bottom (italic). Uses timestamp matching. Returns `lang|mix_path|source_path` on stdout
 - `_auto_embed_with_mix()` — embeds up to 3 tracks: target lang, source lang, bilingual mix. First embed handles `--strip-existing`, subsequent embeds use `FORCE_EMBED`
 
 ## CI/CD
