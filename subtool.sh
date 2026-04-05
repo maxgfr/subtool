@@ -51,6 +51,7 @@ DIFF_FILE=""
 MIX_FILE=""
 MIX_MODE=false
 MIX_LANG=""
+MIX_TRANSLATE=false
 SWAP_MIX=false
 STRIP_EXISTING=false
 
@@ -1551,8 +1552,7 @@ ${BOLD}OPTIONS${NC}
     --to <format>             Target format for convert (srt, vtt, ass)
     --merge-with <file>       Secondary file for bilingual merge
     --mix-with <file>         Second file for mix (dual-language subtitles)
-    --mix                     Enable dual-language mix in auto mode
-    --mix-lang <lang>         Language for mix top (learning language). Implies --mix
+    --mix [lang]              Enable dual-language mix in auto mode (optional language code, e.g. --mix de)
     --swap                    Swap mix order (reverse which language is on top vs italic)
     --diff-with <file>        Second file for subtitle diff comparison
     --playlist <file>         Text file listing video paths for batch auto
@@ -1578,6 +1578,7 @@ ${BOLD}OPTIONS${NC}
     --max-parallel <n>        Max parallel translation chunks (default: 3 LLM, 8 google)
     --resume                  Resume batch from previous state (skip already-completed files)
     --keep-files              Keep intermediate subtitle files after auto (default: cleanup)
+    --mix-translate           Force mix to translate target subtitle instead of searching/downloading
     --auto                    Automatically select most downloaded result
     --dry-run                 Display results without downloading
     --json                    JSON output (for integration with other tools)
@@ -1593,7 +1594,7 @@ ${BOLD}EXAMPLES${NC}
     $SCRIPT_NAME auto movie.mkv -l fr
     $SCRIPT_NAME auto movie.mkv -l fr --mix           # dual-language: FR top + source italic
     $SCRIPT_NAME auto movie.mkv -l fr --mix --swap    # dual-language: source top + FR italic
-    $SCRIPT_NAME auto movie.mkv -l fr --mix-lang de   # dual-language: FR top + DE italic
+    $SCRIPT_NAME auto movie.mkv -l fr --mix de         # dual-language: FR top + DE italic
 
     # Smart get - single episode
     $SCRIPT_NAME get -q \"Die Discounter S01E03\" -l de
@@ -2471,6 +2472,7 @@ cmd_auto() {
     $FORCE_TRANSCRIBE && info "Transcription: forced (skipping subtitle search)"
     if $MIX_MODE; then
         [[ -n "$MIX_LANG" ]] && info "Mix: active (bilingual, learning: $MIX_LANG)" || info "Mix: active (bilingual subtitles)"
+        $MIX_TRANSLATE && info "Mix: translate mode (skip search/download, translate target)"
     fi
     [[ -n "$SKIP_STEPS" ]] && info "Skip steps: $SKIP_STEPS"
     if $KEEP_FILES; then
@@ -2598,7 +2600,7 @@ cmd_auto() {
                     if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                         # Extract a second subtitle stream in another language for mixing
                         if [[ -n "$MIX_LANG" ]]; then
-                            # --mix-lang specified: extract that language
+                            # --mix <lang> specified: extract that language
                             local _mix_idx
                             if _mix_idx=$(_find_subtitle_stream_index "$video_file" "$MIX_LANG") && [[ "$_mix_idx" != "$embedded_idx" ]]; then
                                 mix_existing_srt="${dir_name}/${name_no_ext}.${MIX_LANG}.srt"
@@ -2610,7 +2612,7 @@ cmd_auto() {
                                 fi
                             fi
                         else
-                            # No --mix-lang: find any other subtitle stream
+                            # No --mix <lang>: find any other subtitle stream
                             local _s_idx _s_lang
                             while IFS=',' read -r _s_idx _s_lang; do
                                 _s_idx=$(echo "$_s_idx" | tr -d '[:space:]')
@@ -2884,7 +2886,6 @@ cmd_auto() {
                     _auto_sync "$video_file" "$existing_srt" "$existing_lang"
                 fi
                 # ── Step 4b: Mix using SYNCED target_srt timestamps ──
-                local embed_srt="$target_srt" embed_title=""
                 local mix_file="" mix_embed_title=""
                 if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
@@ -2967,13 +2968,31 @@ _auto_mix() {
 
     local mix_source="" mix_lang=""
 
+    # Resolve effective mix language (needed for both translate and search paths)
+    local _effective_mix_lang="${MIX_LANG:-}"
+    if [[ -z "$_effective_mix_lang" ]] && command -v ffprobe &>/dev/null; then
+        local _aidx _alang
+        while IFS=',' read -r _aidx _alang; do
+            _alang=$(echo "$_alang" | tr -d '[:space:]')
+            [[ -z "$_alang" || "$_alang" == "und" ]] && continue
+            _alang=$(_iso639_2_to_lang "$_alang")
+            [[ "$_alang" == "$target" ]] && continue
+            _effective_mix_lang="$_alang"
+            info "Auto-detected mix language: $_effective_mix_lang"
+            break
+        done < <(ffprobe -v error -select_streams a -show_entries stream=index:stream_tags=language -of csv=p=0 "$video" 2>/dev/null)
+    fi
+
+    # --mix-translate: skip search/download, translate target subtitle directly
+    if ! $MIX_TRANSLATE; then
+
     # Priority 1: explicit existing_srt from translate path
     if [[ -n "$existing_srt" && -f "$existing_srt" && "$existing_lang" != "$target" ]]; then
         mix_source="$existing_srt"
         mix_lang="$existing_lang"
     fi
 
-    # Priority 2: if --mix-lang specified, look for that specific language
+    # Priority 2: if --mix <lang> specified, look for that specific language
     if [[ -n "$MIX_LANG" && ( -z "$mix_source" || "$mix_lang" != "$MIX_LANG" ) ]]; then
         local want_srt="${dir_name}/${name_no_ext}.${MIX_LANG}.srt"
         if [[ -f "$want_srt" && "$want_srt" != "$target_srt" ]]; then
@@ -2993,7 +3012,7 @@ _auto_mix() {
             # Skip mix/dual outputs from previous runs
             [[ "$srt_lang" == "mix" ]] && continue
             if [[ -n "$srt_lang" && "$srt_lang" != "$target" && ${#srt_lang} -le 3 ]]; then
-                # If --mix-lang set, only accept that language
+                # If --mix <lang> set, only accept that language
                 if [[ -n "$MIX_LANG" && "$srt_lang" != "$MIX_LANG" ]]; then
                     continue
                 fi
@@ -3002,21 +3021,6 @@ _auto_mix() {
                 break
             fi
         done
-    fi
-
-    # Priority 3.5: auto-detect mix language from video audio tracks when --mix without language
-    local _effective_mix_lang="${MIX_LANG:-}"
-    if [[ -z "$mix_source" && -z "$_effective_mix_lang" ]] && command -v ffprobe &>/dev/null; then
-        local _aidx _alang
-        while IFS=',' read -r _aidx _alang; do
-            _alang=$(echo "$_alang" | tr -d '[:space:]')
-            [[ -z "$_alang" || "$_alang" == "und" ]] && continue
-            _alang=$(_iso639_2_to_lang "$_alang")
-            [[ "$_alang" == "$target" ]] && continue
-            _effective_mix_lang="$_alang"
-            info "Auto-detected mix language: $_effective_mix_lang"
-            break
-        done < <(ffprobe -v error -select_streams a -show_entries stream=index:stream_tags=language -of csv=p=0 "$video" 2>/dev/null)
     fi
 
     # Priority 4: try to download subtitles in the mix language
@@ -3042,6 +3046,27 @@ _auto_mix() {
                     fi
                 fi
             fi
+        fi
+    fi
+
+    fi # end if ! $MIX_TRANSLATE
+
+    # Priority 5: translate target subtitle into the mix language (fallback, or forced via --mix-translate)
+    if [[ -z "$mix_source" && -n "$_effective_mix_lang" && -f "$target_srt" ]]; then
+        local _mix_translated="${dir_name}/${name_no_ext}.${_effective_mix_lang}.srt"
+        info "Translating $target -> $_effective_mix_lang for mix..."
+        if translate_subtitle "$target_srt" "$_mix_translated" "$target" "$_effective_mix_lang" "$AI_PROVIDER" 2>/dev/null; then
+            if [[ -s "$_mix_translated" ]]; then
+                log "Translated ($target -> $_effective_mix_lang) for mix: $(basename "$_mix_translated")"
+                mix_source="$_mix_translated"
+                mix_lang="$_effective_mix_lang"
+            else
+                debug "Mix: translation produced empty file" || true
+                rm -f "$_mix_translated"
+            fi
+        else
+            debug "Mix: translation failed for $_effective_mix_lang" || true
+            rm -f "$_mix_translated"
         fi
     fi
 
@@ -4685,7 +4710,7 @@ COMPLETIONS_SHELL=""
 cmd_completions() {
     local shell="${COMPLETIONS_SHELL:-bash}"
     local commands="auto transcribe get search batch translate info clean sync autosync convert merge mix fix extract embed strip text diff config check providers sources completions manpage"
-    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --strip-existing --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --resume --keep-files --mix --mix-lang --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
+    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --strip-existing --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --resume --keep-files --mix --mix-translate --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
 
     case "$shell" in
         bash)
@@ -4709,7 +4734,7 @@ _subtool() {
         --claude-effort) COMPREPLY=(\$(compgen -W "low medium high" -- "\$cur")); return ;;
         --skip-steps)   COMPREPLY=(\$(compgen -W "download translate sync mix embed" -- "\$cur")); return ;;
         completions)    COMPREPLY=(\$(compgen -W "bash zsh fish" -- "\$cur")); return ;;
-        -o|--output|-q|--query|-l|--lang|-i|--imdb|-s|--season|-e|--episode|-m|--model|--shift|--chunk-size|--max-tokens|--max-parallel|--max-ep|--fallback-langs|--mix-lang)
+        -o|--output|-q|--query|-l|--lang|-i|--imdb|-s|--season|-e|--episode|-m|--model|--shift|--chunk-size|--max-tokens|--max-parallel|--max-ep|--fallback-langs)
             return ;;
         --sub|--ref|--merge-with|--mix-with|--diff-with|--playlist)
             COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
@@ -4793,8 +4818,8 @@ _subtool() {
                         '--shift[Shift in ms]:ms:' \\
                         '--merge-with[Secondary file]:file:_files' \\
                         '--mix-with[Second file for mix]:file:_files' \\
-                        '--mix[Enable dual-language mix in auto]' \\
-                        '--mix-lang[Learning language for mix]:lang:' \\
+                        '--mix[Enable dual-language mix in auto (optional lang)]' \\
+                        '--mix-translate[Translate target subtitle for mix]' \\
                         '--swap[Swap mix display order]' \\
                         '--diff-with[File to diff]:file:_files' \\
                         '--playlist[Playlist file]:file:_files' \\
@@ -4880,8 +4905,8 @@ complete -c subtool -l to -d 'Target format' -x -a 'srt vtt ass'
 complete -c subtool -l shift -d 'Shift in ms' -x
 complete -c subtool -l merge-with -d 'Secondary file' -r -F
 complete -c subtool -l mix-with -d 'Second file for mix' -r -F
-complete -c subtool -l mix -d 'Enable dual-language mix in auto'
-complete -c subtool -l mix-lang -d 'Learning language for mix' -x
+complete -c subtool -l mix -d 'Enable dual-language mix in auto (optional lang)'
+complete -c subtool -l mix-translate -d 'Translate target subtitle for mix'
 complete -c subtool -l swap -d 'Swap mix display order'
 complete -c subtool -l diff-with -d 'File to diff' -r -F
 complete -c subtool -l playlist -d 'Playlist file' -r -F
@@ -5259,7 +5284,7 @@ parse_args() {
                     shift
                 fi
                 ;;
-            --mix-lang)    MIX_LANG="$2"; MIX_MODE=true; shift 2 ;;
+            --mix-translate) MIX_TRANSLATE=true; MIX_MODE=true; shift ;;
             --swap)        SWAP_MIX=true; shift ;;
             --playlist)    PLAYLIST_FILE="$2"; shift 2 ;;
             --sub)         EMBED_SUB="$2"; shift 2 ;;

@@ -105,6 +105,7 @@ assert_output_contains "--help contains --whisper-model" "$out" "\-\-whisper-mod
 assert_output_contains "--help contains --no-transcribe" "$out" "\-\-no-transcribe"
 assert_output_contains "--help contains --transcribe-provider" "$out" "\-\-transcribe-provider"
 assert_output_contains "--help contains --force-transcribe" "$out" "\-\-force-transcribe"
+assert_output_contains "--help contains --mix-translate" "$out" "\-\-mix-translate"
 
 out=$("$SUBSYNC" providers 2>&1)
 assert_output_contains "providers lists claude-code" "$out" "claude-code"
@@ -2080,15 +2081,15 @@ if command -v ffmpeg &>/dev/null; then
             assert "auto --mix embedded: mix file created (got: $(ls "$auto_mix_dir"/*.srt 2>/dev/null | xargs -I{} basename {} | tr '\n' ' '))" 1
         fi
 
-        # Also test with explicit --mix-lang
+        # Also test with explicit --mix <lang>
         rm -f "$auto_mix_dir"/*.srt 2>/dev/null
-        out=$("$SUBSYNC" auto "$auto_mix_video" -l fr --mix-lang de --no-embed --skip-steps sync 2>&1 || true)
+        out=$("$SUBSYNC" auto "$auto_mix_video" -l fr --mix de --no-embed --skip-steps sync 2>&1 || true)
         auto_mix_output2="$auto_mix_dir/test_auto_mix.mix.srt"
         if [[ -f "$auto_mix_output2" ]]; then
-            assert "auto --mix-lang embedded: mix file created" 0
-            assert_file_contains "auto --mix-lang embedded: DE text present" "$auto_mix_output2" "Willkommen"
+            assert "auto --mix de embedded: mix file created" 0
+            assert_file_contains "auto --mix de embedded: DE text present" "$auto_mix_output2" "Willkommen"
         else
-            assert "auto --mix-lang embedded: mix file created" 1
+            assert "auto --mix de embedded: mix file created" 1
         fi
     else
         assert "auto --mix embedded: test video created" 1
@@ -2789,7 +2790,7 @@ assert_output_contains "help: manpage" "$out" "manpage.*Generate man page"
 assert_output_contains "help: --diff-with" "$out" "\-\-diff-with"
 assert_output_contains "help: --mix-with" "$out" "\-\-mix-with"
 assert_output_contains "help: --mix" "$out" "\-\-mix"
-assert_output_contains "help: --mix-lang" "$out" "\-\-mix-lang"
+assert_output_contains "help: --mix-translate" "$out" "\-\-mix-translate"
 assert_output_contains "help: --swap" "$out" "\-\-swap"
 assert_output_contains "help: --force-embed" "$out" "\-\-force-embed"
 assert_output_contains "help: --strip-existing" "$out" "\-\-strip-existing"
@@ -2965,6 +2966,58 @@ if [[ -f "$_auto_video_defr" ]]; then
     fi
 else
     assert "auto mix order: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto --mix-translate"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _mt_dir="$TMP_DIR/mix_translate_test"
+    mkdir -p "$_mt_dir"
+    cp "$_auto_video_defr" "$_mt_dir/movie.mkv"
+
+    # --mix-translate: should translate target (FR) into mix lang (DE) instead of searching/downloading
+    out=$("$SUBSYNC" auto "$_mt_dir/movie.mkv" -l fr --mix de --mix-translate --no-embed --skip-steps sync 2>&1 || true)
+    assert_output_contains "mix-translate: translate mode announced" "$out" "translate mode"
+
+    _mt_mix="$_mt_dir/movie.mix.srt"
+    # Translation requires a provider (trans/google). If not available, mix file won't be created.
+    if [[ -f "$_mt_mix" ]]; then
+        assert "mix-translate: mix file created" 0
+        # Mix file should contain FR text (target, on top) and translated DE text (italic)
+        assert_file_contains "mix-translate: FR text present" "$_mt_mix" "Bienvenue|Kolinski|rayons"
+        # DE text should be in italic (translated from FR)
+        if grep -q "<i>" "$_mt_mix"; then
+            assert "mix-translate: has italic text (translated mix)" 0
+        else
+            assert "mix-translate: has italic text (translated mix)" 1
+        fi
+    else
+        # If translation failed (no provider), check that translate was attempted
+        if echo "$out" | grep -qE "Translating.*fr.*->.*de"; then
+            assert "mix-translate: translation attempted (provider unavailable)" 0
+        else
+            assert "mix-translate: translation attempted" 1
+        fi
+    fi
+
+    # Verify --mix-translate skips download: output should NOT contain "Downloading" for mix
+    if echo "$out" | grep -q "Downloading.*subtitles for mix"; then
+        assert "mix-translate: skips download step" 1
+    else
+        assert "mix-translate: skips download step" 0
+    fi
+
+    # Without --mix-translate: same setup should NOT attempt translation if download path available
+    rm -f "$_mt_dir"/*.srt 2>/dev/null
+    out2=$("$SUBSYNC" auto "$_mt_dir/movie.mkv" -l fr --mix de --no-embed --skip-steps sync 2>&1 || true)
+    if echo "$out2" | grep -q "translate mode"; then
+        assert "mix no-translate: translate mode NOT announced" 1
+    else
+        assert "mix no-translate: translate mode NOT announced" 0
+    fi
+else
+    assert "mix-translate: test video created" 1
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════

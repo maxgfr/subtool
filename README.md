@@ -103,7 +103,7 @@ subtool auto ~/Movies/Die.Discounter -l fr -p openai      # use OpenAI for trans
 subtool auto movie.mkv -l fr                              # single file
 subtool auto movie.mkv -l fr --mix                        # dual-language: auto-detect + FR
 subtool auto movie.mkv -l fr --mix de                     # dual-language: DE (top) + FR (bottom)
-subtool auto movie.mkv -l fr --mix-lang de                # same as above (alias)
+subtool auto movie.mkv -l fr --mix de --mix-translate     # translate FR→DE for mix (no download)
 subtool auto ~/Movies/Die.Discounter -l en,fr             # multi-language
 subtool auto ~/Movies/Die.Discounter -l fr --no-embed     # skip embed
 subtool auto movie.mkv -l fr --force-transcribe           # skip download, always transcribe
@@ -211,7 +211,7 @@ subtool manpage | man -l -
 | `--track <num>` | Extract a specific subtitle track (`extract` command) |
 | `--mix [lang]` | Enable dual-language mix in `auto` mode (optional language, e.g. `--mix de`; auto-detects if omitted) |
 | `--mix-with <file>` | Second file for `mix` (dual-language subtitles) |
-| `--mix-lang <lang>` | Alias for `--mix <lang>` — learning language for mix top (implies `--mix`) |
+| `--mix-translate` | Force mix to translate target subtitle instead of searching/downloading |
 | `--diff-with <file>` | Second file for `diff` comparison |
 | `--playlist <file>` | Text file listing video paths for batch `auto` |
 | `--skip-steps <steps>` | Skip steps in `auto` (comma-separated: `download,translate,sync,mix,embed`) |
