@@ -2885,6 +2885,422 @@ assert_output_contains "playlist auto-detect: .txt" "$out" "Playlist|not found"
 rm -f "$playlist_file"
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ── AUTO FLOW COMPREHENSIVE TESTS ────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+if command -v ffmpeg &>/dev/null; then
+
+# Create shared test videos (reused across auto sections)
+_auto_test_base="$TMP_DIR/auto_tests"
+mkdir -p "$_auto_test_base"
+
+# Video with DE + FR embedded subs
+_auto_video_defr="$_auto_test_base/master_defr.mkv"
+ffmpeg -v quiet -f lavfi -i "color=black:s=320x240:d=1" \
+    -i "$FIXTURES/basic.srt" -i "$FIXTURES/basic_fr.srt" \
+    -c:v libx264 -preset ultrafast -c:s srt \
+    -map 0 -map 1 -map 2 \
+    -metadata:s:s:0 language=de -metadata:s:s:0 title=German \
+    -metadata:s:s:1 language=fr -metadata:s:s:1 title=French \
+    "$_auto_video_defr" -y 2>/dev/null
+
+# Video with DE only (no FR)
+_auto_video_de="$_auto_test_base/master_de.mkv"
+ffmpeg -v quiet -f lavfi -i "color=black:s=320x240:d=1" \
+    -i "$FIXTURES/basic.srt" \
+    -c:v libx264 -preset ultrafast -c:s srt \
+    -map 0 -map 1 \
+    -metadata:s:s:0 language=de -metadata:s:s:0 title=German \
+    "$_auto_video_de" -y 2>/dev/null
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto --mix italic order"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _mix_order_dir="$TMP_DIR/mix_order_test"
+    mkdir -p "$_mix_order_dir"
+    cp "$_auto_video_defr" "$_mix_order_dir/movie.mkv"
+
+    # Default: target (FR) on top (normal), mix (DE) on bottom (italic)
+    out=$("$SUBSYNC" auto "$_mix_order_dir/movie.mkv" -l fr --mix --no-embed --skip-steps sync 2>&1 || true)
+    _mix_out="$_mix_order_dir/movie.mix.srt"
+    if [[ -f "$_mix_out" ]]; then
+        assert "auto mix order: mix file created" 0
+        # FR (target) should be on top — normal text, not italic
+        if grep -q "^Bienvenue" "$_mix_out"; then
+            assert "auto mix default: FR (target) on top" 0
+        else
+            assert "auto mix default: FR (target) on top" 1
+        fi
+        assert_file_contains "auto mix default: DE (mix) in italic" "$_mix_out" "<i>Willkommen"
+        assert_file_not_contains "auto mix default: FR is NOT italic" "$_mix_out" "<i>Bienvenue"
+        if grep -q "^Willkommen" "$_mix_out"; then
+            assert "auto mix default: DE is NOT on top (normal)" 1
+        else
+            assert "auto mix default: DE is NOT on top (normal)" 0
+        fi
+    else
+        assert "auto mix order: mix file created (got: $(ls "$_mix_order_dir"/*.srt 2>/dev/null | xargs -I{} basename {} | tr '\n' ' '))" 1
+    fi
+
+    # With --swap: DE (mix) on top (normal), FR (target) on bottom (italic)
+    rm -f "$_mix_order_dir"/*.srt 2>/dev/null
+    out=$("$SUBSYNC" auto "$_mix_order_dir/movie.mkv" -l fr --mix --swap --no-embed --skip-steps sync 2>&1 || true)
+    _mix_out="$_mix_order_dir/movie.mix.srt"
+    if [[ -f "$_mix_out" ]]; then
+        if grep -q "^Willkommen" "$_mix_out"; then
+            assert "auto mix --swap: DE (mix) on top" 0
+        else
+            assert "auto mix --swap: DE (mix) on top" 1
+        fi
+        assert_file_contains "auto mix --swap: FR (target) in italic" "$_mix_out" "<i>Bienvenue"
+        assert_file_not_contains "auto mix --swap: DE is NOT italic" "$_mix_out" "<i>Willkommen"
+        if grep -q "^Bienvenue" "$_mix_out"; then
+            assert "auto mix --swap: FR is NOT on top (normal)" 1
+        else
+            assert "auto mix --swap: FR is NOT on top (normal)" 0
+        fi
+    else
+        assert "auto mix --swap: mix file created" 1
+    fi
+else
+    assert "auto mix order: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto directory mode excludes temp files"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _tmpexcl_dir="$TMP_DIR/tmpexcl_test"
+    mkdir -p "$_tmpexcl_dir"
+    cp "$_auto_video_defr" "$_tmpexcl_dir/real_video.mkv"
+    # Create orphaned temp files (from interrupted embeds)
+    touch "$_tmpexcl_dir/real_video.tmp.mkv"
+    touch "$_tmpexcl_dir/real_video.stripped.mkv"
+    touch "$_tmpexcl_dir/another.tmp.mp4"
+
+    out=$("$SUBSYNC" auto "$_tmpexcl_dir" -l de --dry-run 2>&1 || true)
+    assert_output_contains "tmpexcl: finds 1 video only" "$out" "1 videos found"
+    if echo "$out" | grep -q "real_video\.tmp\.mkv"; then
+        assert "tmpexcl: .tmp.mkv NOT processed" 1
+    else
+        assert "tmpexcl: .tmp.mkv NOT processed" 0
+    fi
+    if echo "$out" | grep -q "stripped\.mkv"; then
+        assert "tmpexcl: .stripped.mkv NOT processed" 1
+    else
+        assert "tmpexcl: .stripped.mkv NOT processed" 0
+    fi
+    if echo "$out" | grep -q "another\.tmp\.mp4"; then
+        assert "tmpexcl: .tmp.mp4 NOT processed" 1
+    else
+        assert "tmpexcl: .tmp.mp4 NOT processed" 0
+    fi
+else
+    assert "tmpexcl: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto cleanup after embed vs --keep-files"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    # Test 1: --no-embed → SRT file preserved (no cleanup without embed)
+    _cleanup_dir="$TMP_DIR/cleanup_test1"
+    mkdir -p "$_cleanup_dir"
+    cp "$_auto_video_defr" "$_cleanup_dir/movie.mkv"
+    "$SUBSYNC" auto "$_cleanup_dir/movie.mkv" -l de --no-embed --skip-steps sync 2>&1 >/dev/null || true
+    if [[ -f "$_cleanup_dir/movie.de.srt" ]]; then
+        assert "cleanup: --no-embed preserves SRT" 0
+    else
+        assert "cleanup: --no-embed preserves SRT" 1
+    fi
+
+    # Test 2: embed enabled → SRT cleaned up after successful embed
+    _cleanup_dir2="$TMP_DIR/cleanup_test2"
+    mkdir -p "$_cleanup_dir2"
+    cp "$_auto_video_defr" "$_cleanup_dir2/movie.mkv"
+    "$SUBSYNC" auto "$_cleanup_dir2/movie.mkv" -l de --skip-steps sync --strip-existing 2>&1 >/dev/null || true
+    if [[ -f "$_cleanup_dir2/movie.de.srt" ]]; then
+        assert "cleanup: embed success removes SRT" 1
+    else
+        assert "cleanup: embed success removes SRT" 0
+    fi
+
+    # Test 3: --keep-files → SRT preserved even after embed
+    _cleanup_dir3="$TMP_DIR/cleanup_test3"
+    mkdir -p "$_cleanup_dir3"
+    cp "$_auto_video_defr" "$_cleanup_dir3/movie.mkv"
+    "$SUBSYNC" auto "$_cleanup_dir3/movie.mkv" -l de --keep-files --skip-steps sync --strip-existing 2>&1 >/dev/null || true
+    if [[ -f "$_cleanup_dir3/movie.de.srt" ]]; then
+        assert "cleanup: --keep-files preserves SRT after embed" 0
+    else
+        assert "cleanup: --keep-files preserves SRT after embed" 1
+    fi
+else
+    assert "cleanup: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto translation failure cleanup"
+
+# Bug 3 fix: when translation fails, downloaded fallback SRT should be cleaned up
+# Only testable when translate-shell (trans) is NOT available (otherwise translation succeeds)
+if [[ -f "$_auto_video_de" ]]; then
+    if ! command -v trans &>/dev/null; then
+        _trfail_dir="$TMP_DIR/trfail_test"
+        mkdir -p "$_trfail_dir"
+        cp "$_auto_video_de" "$_trfail_dir/movie.mkv"
+        # Target FR, video has only DE subs → extract DE, translate DE→FR fails (no trans), cleanup DE
+        "$SUBSYNC" auto "$_trfail_dir/movie.mkv" -l fr --no-transcribe --skip-steps sync --no-embed 2>&1 >/dev/null || true
+        if [[ -f "$_trfail_dir/movie.de.srt" ]]; then
+            assert "trfail cleanup: fallback SRT removed after failed translation" 1
+        else
+            assert "trfail cleanup: fallback SRT removed after failed translation" 0
+        fi
+        # FR target should NOT exist (translation failed)
+        if [[ -f "$_trfail_dir/movie.fr.srt" ]]; then
+            assert "trfail cleanup: target SRT not created (translation failed)" 1
+        else
+            assert "trfail cleanup: target SRT not created (translation failed)" 0
+        fi
+    else
+        printf "  ${YELLOW}SKIP${NC}  auto translation failure cleanup: trans is available (translation would succeed)\n"
+    fi
+else
+    assert "trfail cleanup: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto --no-embed"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _noembed_dir="$TMP_DIR/noembed_test"
+    mkdir -p "$_noembed_dir"
+    cp "$_auto_video_defr" "$_noembed_dir/movie.mkv"
+
+    out=$("$SUBSYNC" auto "$_noembed_dir/movie.mkv" -l de --no-embed --skip-steps sync 2>&1 || true)
+    assert_output_contains "no-embed: reports inactive" "$out" "Embed: inactive"
+    assert_file_exists "no-embed: SRT file exists" "$_noembed_dir/movie.de.srt"
+    # Video should be unchanged (same subtitle count)
+    orig_subs=$(ffprobe -v quiet -select_streams s -show_entries stream=index -of csv=p=0 "$_noembed_dir/movie.mkv" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$orig_subs" == "2" ]]; then
+        assert "no-embed: video subtitle count unchanged" 0
+    else
+        assert "no-embed: video subtitle count unchanged (got $orig_subs)" 1
+    fi
+else
+    assert "no-embed: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto --dry-run"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _dryrun_dir="$TMP_DIR/dryrun_test"
+    mkdir -p "$_dryrun_dir"
+    cp "$_auto_video_defr" "$_dryrun_dir/movie.mkv"
+
+    out=$("$SUBSYNC" auto "$_dryrun_dir/movie.mkv" -l fr --dry-run 2>&1 || true)
+    assert_output_contains "dry-run: mode announced" "$out" "dry-run"
+    assert_output_contains "dry-run: would actions" "$out" "Would"
+    # No SRT files should be created
+    if ls "$_dryrun_dir"/*.srt 2>/dev/null | grep -q .; then
+        assert "dry-run: no SRT files created" 1
+    else
+        assert "dry-run: no SRT files created" 0
+    fi
+else
+    assert "dry-run: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto --skip-steps"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _skipsteps_dir="$TMP_DIR/skipsteps_test"
+    mkdir -p "$_skipsteps_dir"
+    cp "$_auto_video_defr" "$_skipsteps_dir/movie.mkv"
+
+    out=$("$SUBSYNC" auto "$_skipsteps_dir/movie.mkv" -l de --skip-steps embed,sync --no-embed 2>&1 || true)
+    assert_output_contains "skip-steps: reported in output" "$out" "Skip steps:.*embed"
+    # SRT should exist (embed was skipped)
+    assert_file_exists "skip-steps: SRT created (embed skipped)" "$_skipsteps_dir/movie.de.srt"
+    # No "Sync:" message (sync was skipped)
+    if echo "$out" | grep -q "Sync OK:"; then
+        assert "skip-steps: sync was skipped" 1
+    else
+        assert "skip-steps: sync was skipped" 0
+    fi
+else
+    assert "skip-steps: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto --keep-files"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _keepfiles_dir="$TMP_DIR/keepfiles_test"
+    mkdir -p "$_keepfiles_dir"
+    cp "$_auto_video_defr" "$_keepfiles_dir/movie.mkv"
+
+    out=$("$SUBSYNC" auto "$_keepfiles_dir/movie.mkv" -l de --keep-files --skip-steps sync --strip-existing 2>&1 || true)
+    assert_output_contains "keep-files: announced" "$out" "Keep files: active"
+    assert_file_exists "keep-files: SRT preserved after embed" "$_keepfiles_dir/movie.de.srt"
+else
+    assert "keep-files: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto batch resume"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _batch_dir="$TMP_DIR/batch_resume_test"
+    mkdir -p "$_batch_dir"
+    cp "$_auto_video_defr" "$_batch_dir/video1.mkv"
+    cp "$_auto_video_defr" "$_batch_dir/video2.mkv"
+
+    # First run: process both
+    out=$("$SUBSYNC" auto "$_batch_dir" -l de --no-embed --skip-steps sync 2>&1 || true)
+    assert_output_contains "batch: finds 2 videos" "$out" "2 videos found"
+    _batch_state="$_batch_dir/.subtool_batch_state"
+    if [[ -f "$_batch_state" ]]; then
+        assert "batch: state file created" 0
+        if grep -q "video1.mkv" "$_batch_state" && grep -q "video2.mkv" "$_batch_state"; then
+            assert "batch: state contains both videos" 0
+        else
+            assert "batch: state contains both videos" 1
+        fi
+    else
+        assert "batch: state file created" 1
+    fi
+
+    # Second run WITH --resume: should skip both (batch state says they're done)
+    rm -f "$_batch_dir"/*.srt 2>/dev/null
+    out2=$("$SUBSYNC" auto "$_batch_dir" -l de --no-embed --skip-steps sync --resume 2>&1 || true)
+    assert_output_contains "batch resume: finds 2 videos" "$out2" "2 videos found"
+    # Both should be skipped via batch state, so Skips count should be 2
+    assert_output_contains "batch resume: skips completed files" "$out2" "Skips: 2"
+else
+    assert "batch resume: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto playlist processing"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _pl_dir="$TMP_DIR/playlist_proc_test"
+    mkdir -p "$_pl_dir"
+    cp "$_auto_video_defr" "$_pl_dir/ep01.mkv"
+    cp "$_auto_video_defr" "$_pl_dir/ep02.mkv"
+
+    # Create playlist with comments and blank lines
+    cat > "$_pl_dir/episodes.txt" << PLEOF
+# This is a comment
+${_pl_dir}/ep01.mkv
+
+${_pl_dir}/ep02.mkv
+# Another comment
+PLEOF
+
+    out=$("$SUBSYNC" auto "$_pl_dir/episodes.txt" -l de --no-embed --skip-steps sync 2>&1 || true)
+    assert_output_contains "playlist proc: finds 2 videos" "$out" "2 videos found"
+    assert_file_exists "playlist proc: ep01 SRT created" "$_pl_dir/ep01.de.srt"
+    assert_file_exists "playlist proc: ep02 SRT created" "$_pl_dir/ep02.de.srt"
+else
+    assert "playlist proc: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto multi-lang"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    _ml_dir="$TMP_DIR/multilang_test"
+    mkdir -p "$_ml_dir"
+    cp "$_auto_video_defr" "$_ml_dir/movie.mkv"
+
+    out=$("$SUBSYNC" auto "$_ml_dir/movie.mkv" -l de,fr --no-embed --skip-steps sync,translate 2>&1 || true)
+    assert_output_contains "multi-lang: dispatches DE" "$out" "Language: de"
+    assert_output_contains "multi-lang: dispatches FR" "$out" "Language: fr"
+else
+    assert "multi-lang: test video created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "force-embed (multiple tracks)"
+
+if [[ -f "$_auto_video_defr" ]]; then
+    # FORCE_EMBED=true is the default, so auto always embeds even if tracks exist.
+    # Verify that successive embeds correctly add subtitle tracks.
+    _fe_dir="$TMP_DIR/force_embed_test"
+    mkdir -p "$_fe_dir"
+    cp "$_auto_video_defr" "$_fe_dir/movie.mkv"
+    subs_before=$(ffprobe -v quiet -select_streams s -show_entries stream=index -of csv=p=0 "$_fe_dir/movie.mkv" 2>/dev/null | wc -l | tr -d ' ')
+
+    # Embed a third track (FR again) via auto with existing .fr.srt
+    cp "$FIXTURES/basic_fr.srt" "$_fe_dir/movie.fr.srt"
+    out=$("$SUBSYNC" auto "$_fe_dir/movie.mkv" -l fr --skip-steps sync 2>&1 || true)
+    assert_output_contains "force-embed: embed succeeds" "$out" "Embed OK"
+    subs_after=$(ffprobe -v quiet -select_streams s -show_entries stream=index -of csv=p=0 "$_fe_dir/movie.mkv" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$subs_after" -gt "$subs_before" ]]; then
+        assert "force-embed: track count increased ($subs_before -> $subs_after)" 0
+    else
+        assert "force-embed: track count increased ($subs_before -> $subs_after)" 1
+    fi
+else
+    assert "force-embed: test video created" 1
+fi
+
+else
+    printf "  ${YELLOW}SKIP${NC}  auto flow tests: ffmpeg not available\n"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "sources command"
+
+out=$("$SUBSYNC" sources 2>&1 || true)
+assert_output_contains "sources: lists opensubtitles-org" "$out" "opensubtitles-org"
+assert_output_contains "sources: lists podnapisi" "$out" "podnapisi"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "providers command"
+
+out=$("$SUBSYNC" providers 2>&1 || true)
+assert_output_contains "providers: lists google" "$out" "google"
+assert_output_contains "providers: lists whisper" "$out" "whisper"
+assert_output_contains "providers: lists claude-code" "$out" "claude-code"
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "batch command validation"
+
+out=$("$SUBSYNC" batch 2>&1 || true)
+assert_output_contains "batch: error without args" "$out" "Specify"
+
+out=$("$SUBSYNC" batch -q "Test Movie" -l fr --season 1 --dry-run 2>&1 </dev/null || true)
+# Should not crash — may warn about no results but should print the batch header
+if echo "$out" | grep -qE "batch|Batch|Season"; then
+    assert "batch: --dry-run does not crash" 0
+else
+    assert "batch: --dry-run does not crash" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+section "auto --force-transcribe flag"
+
+if command -v ffmpeg &>/dev/null; then
+    _ft_dir="$TMP_DIR/force_transcribe_test"
+    mkdir -p "$_ft_dir"
+    ffmpeg -v quiet -f lavfi -i "color=black:s=320x240:d=1" -c:v libx264 -preset ultrafast "$_ft_dir/video.mkv" -y 2>/dev/null
+    if [[ -f "$_ft_dir/video.mkv" ]]; then
+        out=$("$SUBSYNC" auto "$_ft_dir/video.mkv" -l fr --force-transcribe --dry-run 2>&1 || true)
+        assert_output_contains "force-transcribe: flag recognized" "$out" "forced|Would transcribe"
+    else
+        printf "  ${YELLOW}SKIP${NC}  force-transcribe: could not create test video\n"
+    fi
+else
+    printf "  ${YELLOW}SKIP${NC}  force-transcribe: ffmpeg not available\n"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # RESULTS
 # ══════════════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}══════════════════════════════════════════${NC}\n"

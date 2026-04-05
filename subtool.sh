@@ -2592,11 +2592,11 @@ cmd_auto() {
                     log "Extracted embedded subtitle ($target, stream $embedded_idx): $(basename "$target_srt")"
                     ((success++)) || true
                     local mix_file="" mix_embed_title="" mix_source_srt="" mix_source_lang=""
+                    local mix_existing_srt="" mix_existing_lang=""
                     # Sync target first
                     [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
                     if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                         # Extract a second subtitle stream in another language for mixing
-                        local mix_existing_srt="" mix_existing_lang=""
                         if [[ -n "$MIX_LANG" ]]; then
                             # --mix-lang specified: extract that language
                             local _mix_idx
