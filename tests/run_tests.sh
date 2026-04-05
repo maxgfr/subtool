@@ -1818,6 +1818,151 @@ if [[ -f "$mismatch_mix" ]]; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "mix timestamp matching (different block structures)"
+
+# Simulate the real-world scenario: French (from MKV) and German (from opensubtitles)
+# have different block segmentation. Timestamp matching should pair correctly.
+ts_match_fr="$TMP_DIR/ts_match.fr.srt"
+ts_match_de="$TMP_DIR/ts_match.de.srt"
+
+# French: 4 blocks with fine-grained segmentation
+cat > "$ts_match_fr" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,000
+Bonjour tout le monde
+
+2
+00:00:05,000 --> 00:00:08,000
+Comment allez-vous ?
+
+3
+00:00:10,000 --> 00:00:13,000
+Je suis content
+
+4
+00:00:15,000 --> 00:00:18,000
+Au revoir
+EOF
+
+# German: 3 blocks — different segmentation (block 1+2 merged, block 3 missing)
+cat > "$ts_match_de" << 'EOF'
+1
+00:00:01,500 --> 00:00:07,500
+Hallo zusammen, wie geht es euch?
+
+2
+00:00:10,500 --> 00:00:12,500
+Ich bin froh
+
+3
+00:00:15,200 --> 00:00:17,800
+Auf Wiedersehen
+EOF
+
+# Parse both SRTs into START|END|TEXT format (same as _mix_parse_srt)
+_test_parse_srt() {
+    sed '1s/^\xef\xbb\xbf//' "$1" | tr -d '\r' | awk '
+    BEGIN { state = "init"; start = ""; end_ts = ""; txt = ""; SEP = "<_NL_>" }
+    function flush() {
+        if (start == "" || txt == "") { start = ""; end_ts = ""; txt = ""; return }
+        printf "%s|%s|%s\n", start, end_ts, txt
+        start = ""; end_ts = ""; txt = ""
+    }
+    /^[0-9]+[[:space:]]*$/ && state != "text" { flush(); state = "index"; next }
+    /[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}/ {
+        split($0, p, " --> "); start = p[1]; end_ts = p[2]; state = "text"; next
+    }
+    state == "text" && /^[[:space:]]*$/ { flush(); state = "init"; next }
+    state == "text" { if (txt != "") txt = txt SEP; txt = txt $0 }
+    END { flush() }
+    '
+}
+_test_parse_srt "$ts_match_fr" > "$TMP_DIR/ts_match_pri.txt"
+_test_parse_srt "$ts_match_de" > "$TMP_DIR/ts_match_sec.txt"
+
+# Run the timestamp-matching awk (same logic as _mix_subtitles with mode=timestamp, swap=true)
+awk -v swap="true" -v mode="timestamp" '
+function ts2ms(ts,   p) { split(ts, p, /[:,]/); return (p[1]*3600+p[2]*60+p[3])*1000+p[4] }
+function mymax(a,b) { return a>b?a:b }
+function mymin(a,b) { return a<b?a:b }
+BEGIN { np=0; ns=0; n=0; SEP="<_NL_>" }
+NR==FNR { np++; split($0,f,"|"); ps[np]=ts2ms(f[1]); pe[np]=ts2ms(f[2]); pt[np]=f[3]; prs[np]=f[1]; pre[np]=f[2]; next }
+{ ns++; split($0,f,"|"); ss[ns]=ts2ms(f[1]); se[ns]=ts2ms(f[2]); st[ns]=f[3]; srs[ns]=f[1]; sre[ns]=f[2] }
+END {
+    for(j=1;j<=ns;j++) sec_used[j]=0
+    sptr=1
+    for(i=1;i<=np;i++) {
+        while(sptr<=ns && se[sptr]<=ps[i]) sptr++
+        best_ov=0; best_j=0
+        for(j=sptr;j<=ns;j++) {
+            if(ss[j]>=pe[i]) break
+            ov=mymin(pe[i],se[j])-mymax(ps[i],ss[j])
+            if(ov>best_ov) { best_ov=ov; best_j=j }
+        }
+        if(best_j>0) sec_used[best_j]=1
+        n++; out_ms[n]=ps[i]; out_rs[n]=prs[i]; out_re[n]=pre[i]
+        out_pt[n]=pt[i]; out_st[n]=(best_j>0)?st[best_j]:""
+    }
+    for(j=1;j<=ns;j++) if(!sec_used[j]) {
+        n++; out_ms[n]=ss[j]; out_rs[n]=srs[j]; out_re[n]=sre[j]; out_pt[n]=""; out_st[n]=st[j]
+    }
+    for(i=2;i<=n;i++) {
+        km=out_ms[i];krs=out_rs[i];kre=out_re[i];kp=out_pt[i];ks=out_st[i]; j=i-1
+        while(j>=1&&out_ms[j]>km) { out_ms[j+1]=out_ms[j];out_rs[j+1]=out_rs[j];out_re[j+1]=out_re[j];out_pt[j+1]=out_pt[j];out_st[j+1]=out_st[j];j-- }
+        out_ms[j+1]=km;out_rs[j+1]=krs;out_re[j+1]=kre;out_pt[j+1]=kp;out_st[j+1]=ks
+    }
+    for(i=1;i<=n;i++) {
+        text=out_pt[i]; sec_text=out_st[i]; gsub(SEP,"\n",text); gsub(SEP,"\n",sec_text)
+        if(swap=="true"){top=sec_text;bot=text} else {top=text;bot=sec_text}
+        if(top!=""&&bot!="") printf "%d\n%s --> %s\n%s\n<i>%s</i>\n\n",i,out_rs[i],out_re[i],top,bot
+        else if(top!="") printf "%d\n%s --> %s\n%s\n\n",i,out_rs[i],out_re[i],top
+        else if(bot!="") printf "%d\n%s --> %s\n<i>%s</i>\n\n",i,out_rs[i],out_re[i],bot
+    }
+}
+' "$TMP_DIR/ts_match_pri.txt" "$TMP_DIR/ts_match_sec.txt" > "$TMP_DIR/ts_match.mix.srt"
+
+ts_match_out="$TMP_DIR/ts_match.mix.srt"
+if [[ -s "$ts_match_out" ]]; then
+    # Block 1 (00:00:01): FR "Bonjour" overlaps DE "Hallo" → paired
+    if grep -q "Hallo" "$ts_match_out" && grep -q "<i>Bonjour" "$ts_match_out"; then
+        assert "timestamp match: block 1 paired (Hallo + Bonjour)" 0
+    else
+        assert "timestamp match: block 1 paired (Hallo + Bonjour)" 1
+    fi
+
+    # Block 2 (00:00:05): FR "Comment" overlaps DE "Hallo zusammen" (01.5-07.5) → paired
+    if grep -q "<i>Comment" "$ts_match_out"; then
+        assert "timestamp match: block 2 paired by overlap" 0
+    else
+        assert "timestamp match: block 2 paired by overlap" 1
+    fi
+
+    # Block 3 (00:00:10): FR "content" overlaps DE "froh" → paired
+    if grep -q "froh" "$ts_match_out" && grep -q "<i>.*content" "$ts_match_out"; then
+        assert "timestamp match: block 3 paired (froh + content)" 0
+    else
+        assert "timestamp match: block 3 paired (froh + content)" 1
+    fi
+
+    # Block 4 (00:00:15): FR "Au revoir" overlaps DE "Auf Wiedersehen" → paired
+    if grep -q "Wiedersehen" "$ts_match_out" && grep -q "<i>Au revoir" "$ts_match_out"; then
+        assert "timestamp match: block 4 paired (Wiedersehen + Au revoir)" 0
+    else
+        assert "timestamp match: block 4 paired (Wiedersehen + Au revoir)" 1
+    fi
+
+    # Should have 4 blocks (from primary/FR — no unmatched DE blocks since all matched)
+    ts_block_count=$(grep -c '^[0-9]\+$' "$ts_match_out" 2>/dev/null || echo 0)
+    if [[ "$ts_block_count" -eq 4 ]]; then
+        assert "timestamp match: correct block count (4 from primary)" 0
+    else
+        assert "timestamp match: correct block count (got $ts_block_count, expected 4)" 1
+    fi
+else
+    assert "timestamp match: output file created" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "mix --swap flag"
 
 # Default --mix-with: primary (DE) on top, --mix-with (FR) in italic

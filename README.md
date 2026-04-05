@@ -101,8 +101,9 @@ subtool auto ~/Movies/Die.Discounter -l fr               # all-in-one (Google Tr
 subtool auto ~/Movies/Die.Discounter -l fr -p claude-code # use Claude for translation
 subtool auto ~/Movies/Die.Discounter -l fr -p openai      # use OpenAI for translation
 subtool auto movie.mkv -l fr                              # single file
-subtool auto movie.mkv -l fr --mix                        # dual-language: source + FR
-subtool auto movie.mkv -l fr --mix-lang de                # dual-language: DE (top) + FR (bottom)
+subtool auto movie.mkv -l fr --mix                        # dual-language: auto-detect + FR
+subtool auto movie.mkv -l fr --mix de                     # dual-language: DE (top) + FR (bottom)
+subtool auto movie.mkv -l fr --mix-lang de                # same as above (alias)
 subtool auto ~/Movies/Die.Discounter -l en,fr             # multi-language
 subtool auto ~/Movies/Die.Discounter -l fr --no-embed     # skip embed
 subtool auto movie.mkv -l fr --force-transcribe           # skip download, always transcribe
@@ -208,14 +209,14 @@ subtool manpage | man -l -
 | `--max-tokens <n>` | Max output tokens for LLM translation (default: auto per provider) |
 | `--all` | Extract all subtitle tracks at once (`extract` command) |
 | `--track <num>` | Extract a specific subtitle track (`extract` command) |
-| `--mix` | Enable dual-language mix in `auto` mode |
+| `--mix [lang]` | Enable dual-language mix in `auto` mode (optional language, e.g. `--mix de`; auto-detects if omitted) |
 | `--mix-with <file>` | Second file for `mix` (dual-language subtitles) |
-| `--mix-lang <lang>` | Learning language for mix top (implies `--mix`) |
+| `--mix-lang <lang>` | Alias for `--mix <lang>` — learning language for mix top (implies `--mix`) |
 | `--diff-with <file>` | Second file for `diff` comparison |
 | `--playlist <file>` | Text file listing video paths for batch `auto` |
 | `--skip-steps <steps>` | Skip steps in `auto` (comma-separated: `download,translate,sync,mix,embed`) |
 | `--max-parallel <n>` | Max parallel translation chunks (default: 3 LLM, 8 google) |
-| `--no-resume` | Ignore batch state and re-process all files |
+| `--resume` | Resume batch from previous state (skip already-completed files) |
 | `--keep-files` | Keep intermediate subtitle files after `auto` |
 | `--verbose` | Show debug output |
 | `--quiet` | Suppress informational messages |
