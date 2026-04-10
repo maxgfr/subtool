@@ -2881,10 +2881,12 @@ cmd_auto() {
 
                 # ── Step 4: Sync target_srt (same as without --mix) ──
                 [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
+                _normalize_srt_for_mix "$target_srt" || true
                 # ── Step 4a: Also sync existing_srt so both drop the same blocks ──
                 if $MIX_MODE && [[ "$_skip" != *",sync,"* ]]; then
                     _auto_sync "$video_file" "$existing_srt" "$existing_lang"
                 fi
+                $MIX_MODE && _normalize_srt_for_mix "$existing_srt" || true
                 # ── Step 4b: Mix using SYNCED target_srt timestamps ──
                 local mix_file="" mix_embed_title=""
                 if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
@@ -3076,8 +3078,11 @@ _auto_mix() {
     fi
 
     # Sync mix_source against target_srt (subtitle-to-subtitle) for block alignment.
-    # This ensures both files have compatible timing for block-by-block pairing.
+    # When sync succeeds, both files should share the same timeline and block layout,
+    # which is more stable for long files than repeatedly re-matching by overlap.
     _auto_sync "$target_srt" "$mix_source" "$mix_lang"
+    _normalize_srt_for_mix "$target_srt" || true
+    _normalize_srt_for_mix "$mix_source" || true
 
     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
     # Default: target lang on top (normal), mix/learning lang on bottom (italic).
@@ -3089,8 +3094,19 @@ _auto_mix() {
     else
         info "Mixing: $target (top) + $mix_lang (bottom, italic)"
     fi
-    # Both files synced: same block alignment, target_srt timestamps as reference
-    _mix_subtitles "$target_srt" "$mix_source" "$mix_output" "$do_swap" "timestamp"
+    # Prefer block matching after subtitle-to-subtitle sync to avoid drift on long files.
+    # Fall back to timestamp overlap only if sync did not fully normalize block counts.
+    local _target_blocks _mix_blocks _mix_mode="block"
+    _target_blocks=$(grep -cE '^[0-9]+$' "$target_srt" 2>/dev/null || echo 0)
+    _mix_blocks=$(grep -cE '^[0-9]+$' "$mix_source" 2>/dev/null || echo 0)
+    if [[ "$_target_blocks" -eq 0 || "$_mix_blocks" -eq 0 ]]; then
+        _mix_mode="timestamp"
+    elif [[ "$((_target_blocks > _mix_blocks ? _target_blocks - _mix_blocks : _mix_blocks - _target_blocks))" -gt 2 ]]; then
+        _mix_mode="timestamp"
+        debug "Mix: block counts still differ after sync ($_target_blocks vs $_mix_blocks) — using timestamp mode" || true
+    fi
+
+    _mix_subtitles "$target_srt" "$mix_source" "$mix_output" "$do_swap" "$_mix_mode"
     log "Mixed: $(basename "$mix_output")"
 
     # Output lang|mix_path|source_path — caller embeds all three and handles cleanup
@@ -4070,6 +4086,61 @@ _mix_subtitles() {
     count=$(grep -c '^[0-9]\+$' "$output" 2>/dev/null || echo 0)
     info "$count subtitles mixed"
     rm -f "$tmp_pri" "$tmp_sec"
+}
+
+# Helper: normalize SRT for stable block-by-block operations after ffsubsync/translation.
+# Fixes BOM/index glitches and removes structurally empty blocks that can shift bilingual mix.
+_normalize_srt_for_mix() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+
+    local tmp="$CACHE_DIR/_mix_norm_$$.srt"
+    mkdir -p "$CACHE_DIR"
+
+    python3 - "$file" "$tmp" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+text = src.read_text(encoding='utf-8', errors='replace')
+text = text.replace('\r\n', '\n').replace('\r', '\n').lstrip('\ufeff')
+blocks = [b for b in re.split(r'\n\s*\n+', text.strip()) if b.strip()]
+out = []
+idx = 1
+ts_re = re.compile(r'^\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}$')
+
+for block in blocks:
+    lines = [line.lstrip('\ufeff') for line in block.split('\n')]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if not lines:
+        continue
+    if lines[0].strip().isdigit():
+        lines = lines[1:]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if len(lines) < 2:
+        continue
+    ts = lines[0].strip()
+    if not ts_re.match(ts):
+        continue
+    body = [line.rstrip() for line in lines[1:] if line.strip()]
+    if not body:
+        continue
+    out.append(f"{idx}\n{ts}\n" + "\n".join(body))
+    idx += 1
+
+dst.write_text("\n\n".join(out) + ("\n\n" if out else ""), encoding='utf-8')
+PY
+
+    if [[ -s "$tmp" ]]; then
+        mv "$tmp" "$file"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
 }
 
 # ── Command: mix (dual-language subtitles for language learning) ──────────────
