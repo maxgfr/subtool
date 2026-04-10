@@ -494,7 +494,7 @@ if command -v ffmpeg &>/dev/null; then
 
     if [[ -f "$test_video" ]]; then
         out=$("$SUBSYNC" extract "$test_video" --track 0 -o "$TMP_DIR" 2>&1)
-        extract_file=$(find "$TMP_DIR" -name "test_video.*.srt" | head -1)
+        extract_file=$(printf '%s\n' "$TMP_DIR"/test_video.*.srt | grep -v '\*' | head -1 || true)
         assert_file_exists "extract: subtitles extracted" "${extract_file:-/nonexistent}"
         if [[ -n "$extract_file" ]]; then
             assert_file_contains "extract: correct content" "$extract_file" "Willkommen"
