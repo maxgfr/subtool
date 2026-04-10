@@ -1723,6 +1723,193 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "_normalize_srt_for_mix (regression: bilingual mix stability)"
+
+# Regression for commit 2d239f8: _normalize_srt_for_mix must scrub BOM/CRLF, drop
+# empty-body blocks and renumber indices so block-by-block bilingual mix stays
+# aligned after ffsubsync/translation reshape the SRT.
+
+# Extract the function from subtool.sh and source it (subtool.sh's main() runs on
+# load, so we cannot source the whole file; awk pulls out just this helper).
+norm_func_file="$TMP_DIR/_normalize_srt_for_mix.sh"
+awk '/^_normalize_srt_for_mix\(\) \{$/,/^\}$/' "$SUBSYNC" > "$norm_func_file"
+if [[ ! -s "$norm_func_file" ]]; then
+    assert "normalize: function extracted from subtool.sh" 1
+else
+    assert "normalize: function extracted from subtool.sh" 0
+fi
+
+# Build a "dirty" SRT: BOM prefix, CRLF endings, gaps in indices (1, 5, 99, 42),
+# empty-body block (99), multi-line body, trailing whitespace on a line.
+norm_in="$TMP_DIR/normalize_in.srt"
+printf '\xef\xbb\xbf' > "$norm_in"
+{
+    printf '1\r\n00:00:01,000 --> 00:00:03,000\r\nHello world  \r\n\r\n'
+    printf '5\r\n00:00:05,000 --> 00:00:07,000\r\nMulti\r\nline text\r\n\r\n'
+    printf '99\r\n00:00:09,000 --> 00:00:10,000\r\n\r\n'
+    printf '42\r\n00:00:12,000 --> 00:00:13,000\r\nLast block\r\n'
+} >> "$norm_in"
+
+# Run normalization in a subshell so CACHE_DIR override stays scoped
+(
+    CACHE_DIR="$TMP_DIR/_norm_cache"
+    mkdir -p "$CACHE_DIR"
+    # shellcheck disable=SC1090
+    source "$norm_func_file"
+    _normalize_srt_for_mix "$norm_in"
+)
+
+assert_file_exists "normalize: output written" "$norm_in"
+
+# BOM stripped (no 0xEF 0xBB 0xBF at start)
+if head -c 3 "$norm_in" | LC_ALL=C grep -q $'\xef\xbb\xbf'; then
+    assert "normalize: BOM stripped" 1
+else
+    assert "normalize: BOM stripped" 0
+fi
+
+# CRLF stripped (no \r anywhere)
+if LC_ALL=C grep -q $'\r' "$norm_in"; then
+    assert "normalize: CRLF stripped" 1
+else
+    assert "normalize: CRLF stripped" 0
+fi
+
+# Empty-body block dropped: 4 input blocks → 3 output blocks
+norm_blocks=$(grep -c '^[0-9]\+$' "$norm_in" 2>/dev/null || echo 0)
+if [[ "$norm_blocks" -eq 3 ]]; then
+    assert "normalize: empty-body block dropped (3 blocks)" 0
+else
+    assert "normalize: empty-body block dropped (got $norm_blocks)" 1
+fi
+
+# Indices renumbered to a contiguous 1..N sequence (originals were 1, 5, 99, 42)
+norm_idx=$(grep -E '^[0-9]+$' "$norm_in" | tr '\n' ',' | sed 's/,$//')
+if [[ "$norm_idx" == "1,2,3" ]]; then
+    assert "normalize: indices renumbered to 1..N" 0
+else
+    assert "normalize: indices renumbered (got '$norm_idx')" 1
+fi
+
+# Multi-line body preserved as two separate lines
+assert_file_contains "normalize: multi-line body line 1 preserved" "$norm_in" "^Multi$"
+assert_file_contains "normalize: multi-line body line 2 preserved" "$norm_in" "^line text$"
+
+# Trailing whitespace stripped on text lines ("Hello world  " → "Hello world")
+if grep -q "^Hello world  $" "$norm_in"; then
+    assert "normalize: trailing whitespace stripped" 1
+else
+    assert "normalize: trailing whitespace stripped" 0
+fi
+assert_file_contains "normalize: text content preserved" "$norm_in" "^Hello world$"
+assert_file_contains "normalize: dropped block contents gone" "$norm_in" "Last block"
+
+# Latin-1 input must not crash awk and must be transcoded to clean UTF-8.
+# Regression: an earlier awk port omitted iconv + LC_ALL=C and BSD awk crashed
+# with "towc: multibyte conversion failure" on non-UTF-8 bytes, leaving the
+# normalized file empty and the bilingual mix silently broken.
+norm_latin1="$TMP_DIR/normalize_latin1.srt"
+cp "$FIXTURES/latin1.srt" "$norm_latin1"
+(
+    CACHE_DIR="$TMP_DIR/_norm_cache"
+    mkdir -p "$CACHE_DIR"
+    # shellcheck disable=SC1090
+    source "$norm_func_file"
+    _normalize_srt_for_mix "$norm_latin1"
+)
+assert_file_exists "normalize latin1: output not empty (no awk crash)" "$norm_latin1"
+# After conversion the file must be valid UTF-8 with the German text intact
+if iconv -f utf-8 -t utf-8 "$norm_latin1" >/dev/null 2>&1; then
+    assert "normalize latin1: output is valid UTF-8" 0
+else
+    assert "normalize latin1: output is valid UTF-8" 1
+fi
+assert_file_contains "normalize latin1: umlauts transcoded (Schöne Grüße)" "$norm_latin1" "Schöne Grüße"
+assert_file_contains "normalize latin1: umlauts transcoded (Übersetzungstest)" "$norm_latin1" "Übersetzungstest"
+
+# Whitespace-only "blank lines" between blocks must split blocks correctly.
+# Regression: awk's paragraph mode (RS="") only treats truly empty lines as
+# separators — a stray "   \n" between blocks would mash every following block
+# into the body of the first one, silently destroying the bilingual mix. Sed
+# must collapse whitespace-only lines into truly empty lines before awk reads.
+norm_ws="$TMP_DIR/normalize_ws_blank.srt"
+printf '1\n00:00:01,000 --> 00:00:03,000\nBonjour\n   \n2\n00:00:05,000 --> 00:00:07,000\nMerci\n   \n3\n00:00:09,000 --> 00:00:11,000\nAu revoir\n' > "$norm_ws"
+(
+    CACHE_DIR="$TMP_DIR/_norm_cache"
+    mkdir -p "$CACHE_DIR"
+    # shellcheck disable=SC1090
+    source "$norm_func_file"
+    _normalize_srt_for_mix "$norm_ws"
+)
+ws_blocks=$(grep -c '^[0-9]\+$' "$norm_ws" 2>/dev/null || echo 0)
+if [[ "$ws_blocks" -eq 3 ]]; then
+    assert "normalize ws-blank: 3 blocks (whitespace lines split correctly)" 0
+else
+    assert "normalize ws-blank: 3 blocks (got $ws_blocks — blocks merged)" 1
+fi
+assert_file_contains "normalize ws-blank: block 1 timestamp present" "$norm_ws" "00:00:01,000 --> 00:00:03,000"
+assert_file_contains "normalize ws-blank: block 2 timestamp present" "$norm_ws" "00:00:05,000 --> 00:00:07,000"
+assert_file_contains "normalize ws-blank: block 3 timestamp present" "$norm_ws" "00:00:09,000 --> 00:00:11,000"
+assert_file_contains "normalize ws-blank: block 2 text on its own line" "$norm_ws" "^Merci$"
+assert_file_contains "normalize ws-blank: block 3 text on its own line" "$norm_ws" "^Au revoir$"
+
+# Pre-condition for the bilingual mix bug: after normalization, two SRTs from
+# the same source should have matching block counts and block-by-block pair
+# correctly. Build two dirty files representing target/source after sync.
+norm_target_dirty="$TMP_DIR/norm_target.srt"
+norm_source_dirty="$TMP_DIR/norm_source.srt"
+printf '\xef\xbb\xbf' > "$norm_target_dirty"
+{
+    printf '1\r\n00:00:01,000 --> 00:00:03,000\r\nBonjour\r\n\r\n'
+    printf '7\r\n00:00:05,000 --> 00:00:07,000\r\n\r\n'
+    printf '9\r\n00:00:09,000 --> 00:00:11,000\r\nMerci\r\n'
+} >> "$norm_target_dirty"
+printf '\xef\xbb\xbf' > "$norm_source_dirty"
+{
+    printf '1\r\n00:00:01,000 --> 00:00:03,000\r\nHallo\r\n\r\n'
+    printf '4\r\n00:00:05,000 --> 00:00:07,000\r\n\r\n'
+    printf '6\r\n00:00:09,000 --> 00:00:11,000\r\nDanke\r\n'
+} >> "$norm_source_dirty"
+
+(
+    CACHE_DIR="$TMP_DIR/_norm_cache"
+    mkdir -p "$CACHE_DIR"
+    # shellcheck disable=SC1090
+    source "$norm_func_file"
+    _normalize_srt_for_mix "$norm_target_dirty"
+    _normalize_srt_for_mix "$norm_source_dirty"
+)
+
+# Both should now have the same block count (2 — empty block dropped from each)
+nt_blocks=$(grep -c '^[0-9]\+$' "$norm_target_dirty" 2>/dev/null || echo 0)
+ns_blocks=$(grep -c '^[0-9]\+$' "$norm_source_dirty" 2>/dev/null || echo 0)
+if [[ "$nt_blocks" -eq 2 && "$ns_blocks" -eq 2 ]]; then
+    assert "normalize: pair has matching block counts after cleanup" 0
+else
+    assert "normalize: matching block counts (got $nt_blocks vs $ns_blocks)" 1
+fi
+
+# Mix the two normalized files via cmd_mix in block mode and verify pairing.
+"$SUBSYNC" mix "$norm_target_dirty" --mix-with "$norm_source_dirty" -o "$TMP_DIR" 2>&1 >/dev/null
+norm_mix_out="$TMP_DIR/norm_target.mix.srt"
+if [[ -f "$norm_mix_out" ]]; then
+    # Block 1: Bonjour + Hallo paired
+    if grep -q "^Bonjour$" "$norm_mix_out" && grep -q "<i>Hallo" "$norm_mix_out"; then
+        assert "normalize+mix: block 1 paired (Bonjour/Hallo)" 0
+    else
+        assert "normalize+mix: block 1 paired (Bonjour/Hallo)" 1
+    fi
+    # Block 2: Merci + Danke paired (would mis-align without the empty-block drop)
+    if grep -q "^Merci$" "$norm_mix_out" && grep -q "<i>Danke" "$norm_mix_out"; then
+        assert "normalize+mix: block 2 paired (Merci/Danke)" 0
+    else
+        assert "normalize+mix: block 2 paired (Merci/Danke)" 1
+    fi
+else
+    assert "normalize+mix: output file produced" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "mix block alignment (sync drop simulation)"
 
 # After the sync fix, both files are synced and have the same blocks.
@@ -3328,7 +3515,7 @@ section "batch command validation"
 out=$("$SUBSYNC" batch 2>&1 || true)
 assert_output_contains "batch: error without args" "$out" "Specify"
 
-out=$("$SUBSYNC" batch -q "Test Movie" -l fr --season 1 --dry-run 2>&1 </dev/null || true)
+out=$("$SUBSYNC" batch -q "Test Movie" -l fr --season 1 --dry-run -o "$TMP_DIR" 2>&1 </dev/null || true)
 # Should not crash — may warn about no results but should print the batch header
 if echo "$out" | grep -qE "batch|Batch|Season"; then
     assert "batch: --dry-run does not crash" 0

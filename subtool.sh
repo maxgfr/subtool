@@ -2019,7 +2019,7 @@ cmd_get() {
             local success=0 fail=0 translated=0
             local season_dir
             season_dir="${OUTPUT_DIR}/S$(printf '%02d' "$PARSED_SEASON")"
-            mkdir -p "$season_dir"
+            $DRY_RUN || mkdir -p "$season_dir"
 
             for ep in $(seq "$start_ep" "$end_ep"); do
                 local ep_str
@@ -2200,7 +2200,7 @@ cmd_batch() {
     local success=0 fail=0 translated=0
     local season_dir
     season_dir="${OUTPUT_DIR}/S$(printf '%02d' "$SEASON")"
-    mkdir -p "$season_dir"
+    $DRY_RUN || mkdir -p "$season_dir"
 
     for ep in $(seq 1 "$max_ep"); do
         local ep_str
@@ -4090,6 +4090,7 @@ _mix_subtitles() {
 
 # Helper: normalize SRT for stable block-by-block operations after ffsubsync/translation.
 # Fixes BOM/index glitches and removes structurally empty blocks that can shift bilingual mix.
+# Pure awk implementation (no python dependency) — uses paragraph mode (RS="") to read blocks.
 _normalize_srt_for_mix() {
     local file="$1"
     [[ -f "$file" ]] || return 1
@@ -4097,43 +4098,51 @@ _normalize_srt_for_mix() {
     local tmp="$CACHE_DIR/_mix_norm_$$.srt"
     mkdir -p "$CACHE_DIR"
 
-    python3 - "$file" "$tmp" <<'PY'
-import re
-import sys
-from pathlib import Path
+    # Detect encoding and convert to UTF-8 (mirrors cmd_fix). Without this step
+    # BSD awk crashes on Latin-1 bytes under a UTF-8 locale ("towc: multibyte
+    # conversion failure") and bilingual mix downstream sees corrupted text.
+    local _enc
+    _enc=$(file --mime-encoding "$file" 2>/dev/null | awk -F': ' '{print $2}')
+    [[ -z "$_enc" || "$_enc" == "binary" ]] && _enc="utf-8"
 
-src = Path(sys.argv[1])
-dst = Path(sys.argv[2])
-text = src.read_text(encoding='utf-8', errors='replace')
-text = text.replace('\r\n', '\n').replace('\r', '\n').lstrip('\ufeff')
-blocks = [b for b in re.split(r'\n\s*\n+', text.strip()) if b.strip()]
-out = []
-idx = 1
-ts_re = re.compile(r'^\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}$')
-
-for block in blocks:
-    lines = [line.lstrip('\ufeff') for line in block.split('\n')]
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    if not lines:
-        continue
-    if lines[0].strip().isdigit():
-        lines = lines[1:]
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    if len(lines) < 2:
-        continue
-    ts = lines[0].strip()
-    if not ts_re.match(ts):
-        continue
-    body = [line.rstrip() for line in lines[1:] if line.strip()]
-    if not body:
-        continue
-    out.append(f"{idx}\n{ts}\n" + "\n".join(body))
-    idx += 1
-
-dst.write_text("\n\n".join(out) + ("\n\n" if out else ""), encoding='utf-8')
-PY
+    # tr strips CR (CRLF endings); sed empties whitespace-only lines so awk's
+    # paragraph mode recognises them as block separators (otherwise a stray
+    # "   \n" between blocks would mash every following block into the body of
+    # the first one, silently destroying the bilingual mix); LC_ALL=C keeps awk
+    # in byte mode so multibyte sequences pass through intact.
+    iconv -f "$_enc" -t utf-8 "$file" 2>/dev/null \
+        | LC_ALL=C tr -d '\r' \
+        | LC_ALL=C sed 's/^[[:space:]]*$//' \
+        | LC_ALL=C awk -v BOM=$'\xef\xbb\xbf' '
+        BEGIN { RS=""; FS="\n"; idx=1 }
+        NR==1 { if (substr($1, 1, 3) == BOM) $1 = substr($1, 4) }
+        {
+            start = 1
+            while (start <= NF && $start ~ /^[[:space:]]*$/) start++
+            if (start > NF) next
+            numchk = $start
+            sub(/^[[:space:]]+/, "", numchk)
+            sub(/[[:space:]]+$/, "", numchk)
+            if (numchk ~ /^[0-9]+$/) start++
+            while (start <= NF && $start ~ /^[[:space:]]*$/) start++
+            if (start > NF) next
+            ts = $start
+            sub(/^[[:space:]]+/, "", ts)
+            sub(/[[:space:]]+$/, "", ts)
+            if (ts !~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9][,.][0-9][0-9][0-9][[:space:]]+-->[[:space:]]+[0-9][0-9]:[0-9][0-9]:[0-9][0-9][,.][0-9][0-9][0-9]$/) next
+            body = ""; has = 0
+            for (i = start + 1; i <= NF; i++) {
+                line = $i
+                sub(/[[:space:]]+$/, "", line)
+                if (line ~ /^[[:space:]]*$/) continue
+                if (has) body = body "\n" line
+                else { body = line; has = 1 }
+            }
+            if (!has) next
+            printf "%d\n%s\n%s\n\n", idx, ts, body
+            idx++
+        }
+    ' > "$tmp"
 
     if [[ -s "$tmp" ]]; then
         mv "$tmp" "$file"
