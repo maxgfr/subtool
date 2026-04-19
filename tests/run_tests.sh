@@ -226,6 +226,30 @@ assert_file_contains "sync -500ms: 01,000 -> 00,500" "$out_file" "00:00:00,500"
 assert_file_contains "sync -500ms: 04,000 -> 03,500" "$out_file" "00:00:03,500"
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "auto --sync-shift"
+
+out=$("$SUBSYNC" --help 2>&1)
+assert_output_contains "--help mentions --sync-shift" "$out" "\-\-sync-shift"
+
+out=$("$SUBSYNC" auto --help 2>&1 || true)
+assert_output_contains "auto --help mentions --sync-shift" "$out" "\-\-sync-shift"
+
+# Unknown-flag regression: --sync-shift must be accepted (not rejected as unknown)
+out=$("$SUBSYNC" auto /nonexistent/video.mkv -l fr --sync-shift -2000 2>&1 || true)
+assert_output_contains "auto accepts --sync-shift flag" "$out" "(not found|nonexistent|no such|path)"
+if echo "$out" | grep -qiE "unknown (option|flag)|invalid option|unrecognized"; then
+    assert "auto --sync-shift does not trigger unknown-flag error" 1
+else
+    assert "auto --sync-shift does not trigger unknown-flag error" 0
+fi
+
+# Config key AUTO_SYNC_SHIFT persists
+"$SUBSYNC" config set AUTO_SYNC_SHIFT "-2000" 2>&1
+out=$("$SUBSYNC" config get AUTO_SYNC_SHIFT 2>&1)
+assert_output_contains "AUTO_SYNC_SHIFT config stores value" "$out" "\-2000"
+"$SUBSYNC" config set AUTO_SYNC_SHIFT "" 2>&1  # cleanup
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "convert SRT -> VTT"
 
 "$SUBSYNC" convert "$FIXTURES/basic.srt" --to vtt -o "$TMP_DIR" 2>&1

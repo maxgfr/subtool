@@ -215,6 +215,7 @@ subtool manpage | man -l -
 | `--diff-with <file>` | Second file for `diff` comparison |
 | `--playlist <file>` | Text file listing video paths for batch `auto` |
 | `--skip-steps <steps>` | Skip steps in `auto` (comma-separated: `download,translate,sync,mix,embed`) |
+| `--sync-shift <ms>` | Constant shift in ms applied after `ffsubsync` in `auto` mode (e.g. `-2000`). Persist via `AUTO_SYNC_SHIFT` config. |
 | `--max-parallel <n>` | Max parallel translation chunks (default: 3 LLM, 8 google) |
 | `--resume` | Resume batch from previous state (skip already-completed files) |
 | `--keep-files` | Keep intermediate subtitle files after `auto` |
@@ -269,7 +270,28 @@ OPENAI_WHISPER_API_KEY=""        # separate key for transcription (falls back to
 # Translation tuning
 TRANSLATE_CHUNK_SIZE=""          # lines per chunk (default: 80 google, 500 LLM)
 MAX_TOKENS=""                    # max output tokens for LLM (default: auto per provider)
+
+# Auto-sync tuning
+AUTO_SYNC_SHIFT=""               # constant shift in ms applied after ffsubsync in auto (e.g., -2000)
 ```
+
+## Fixing a constant desync in `auto`
+
+`ffsubsync` aligns speech activity, but some subtitle sources carry a systematic
+offset (e.g., a German SRT made for a slightly different cut). When `ffsubsync`
+reports ~0ms offset but your eyes see a constant drift, set a post-sync shift:
+
+```bash
+# One-shot for a single run
+subtool auto ~/Movies/MyShow -l fr --sync-shift -2000
+
+# Or persist it for this machine
+subtool config set AUTO_SYNC_SHIFT -2000
+subtool auto ~/Movies/MyShow -l fr
+```
+
+The shift is applied *after* `ffsubsync`, so you keep VAD-based correction when
+it works and add the constant correction ffsubsync couldn't detect.
 
 ## Smart Query Parsing
 

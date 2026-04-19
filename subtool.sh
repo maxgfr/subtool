@@ -45,6 +45,7 @@ FORCE_TRANSCRIBE=false
 CLAUDE_EFFORT=""
 SKIP_STEPS=""
 TRANSLATE_MAX_PARALLEL=""
+AUTO_SYNC_SHIFT=""
 NO_RESUME=true
 PLAYLIST_FILE=""
 DIFF_FILE=""
@@ -276,6 +277,9 @@ CLAUDE_EFFORT=""
 
 # Max parallel translation chunks — leave empty for defaults (3 LLM, 8 google)
 TRANSLATE_MAX_PARALLEL=""
+
+# Extra constant shift in ms applied after ffsubsync in auto mode (e.g., -2000)
+AUTO_SYNC_SHIFT=""
 CONF
         info "Config created: $CONFIG_FILE"
     fi
@@ -1549,6 +1553,7 @@ ${BOLD}OPTIONS${NC}
     --fallback-langs <l1,l2>  Fallback languages (default: en,de,es,pt)
     --max-ep <num>            Max episodes per season (default: 20)
     --shift <ms>              Shift in ms for sync (e.g., +1500, -800)
+    --sync-shift <ms>         Constant shift in ms applied after ffsubsync in auto mode (e.g., -2000). Also configurable as AUTO_SYNC_SHIFT
     --to <format>             Target format for convert (srt, vtt, ass)
     --merge-with <file>       Secondary file for bilingual merge
     --mix-with <file>         Second file for mix (dual-language subtitles)
@@ -3202,6 +3207,36 @@ _find_audio_stream() {
     return 1
 }
 
+# Apply a constant shift (ms) to an SRT file in place. Negative clamps to 00:00:00,000.
+_shift_srt_inplace() {
+    local file="$1" shift_ms="$2"
+    [[ -z "$shift_ms" || "$shift_ms" == "0" ]] && return 0
+    [[ ! -f "$file" ]] && return 1
+    local tmp="${file}.shifted.$$"
+    awk -v shift="$shift_ms" '
+    function ts2ms(ts,    a, b) {
+        split(ts, a, ":")
+        split(a[3], b, ",")
+        return a[1]*3600000 + a[2]*60000 + b[1]*1000 + b[2]
+    }
+    function ms2ts(ms,    h, m, s) {
+        if (ms < 0) ms = 0
+        h = int(ms / 3600000); ms = ms % 3600000
+        m = int(ms / 60000); ms = ms % 60000
+        s = int(ms / 1000); ms = ms % 1000
+        return sprintf("%02d:%02d:%02d,%03d", h, m, s, ms)
+    }
+    /^[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}/ {
+        split($0, parts, " --> ")
+        start = ts2ms(parts[1]) + shift
+        end = ts2ms(parts[2]) + shift
+        print ms2ts(start) " --> " ms2ts(end)
+        next
+    }
+    { print }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
 # Helper for auto-sync (sync subtitle with video via ffsubsync)
 _auto_sync() {
     local video="$1" sub="$2" lang="${3:-}"
@@ -3249,6 +3284,12 @@ _auto_sync() {
     else
         warn "Sync failed — keeping unsynced version"
         rm -f "$synced"
+    fi
+    # Apply user-configured constant shift on top of ffsubsync result
+    if [[ -n "$AUTO_SYNC_SHIFT" && "$AUTO_SYNC_SHIFT" != "0" ]]; then
+        if _shift_srt_inplace "$sub" "$AUTO_SYNC_SHIFT"; then
+            log "Sync: applied constant shift ${AUTO_SYNC_SHIFT}ms"
+        fi
     fi
     # Clean up extracted reference subtitle
     [[ -n "$ref_tmp" ]] && rm -f "$ref_tmp" || true
@@ -3689,32 +3730,10 @@ cmd_sync() {
 
     header "Sync: $(basename "$FILE_PATH") (${SYNC_SHIFT}ms)"
 
-    local shift_val="${SYNC_SHIFT}"
+    cp "$FILE_PATH" "$output"
+    _shift_srt_inplace "$output" "$SYNC_SHIFT"
 
-    awk -v shift="$shift_val" '
-    function ts2ms(ts,    a, b) {
-        split(ts, a, ":")
-        split(a[3], b, ",")
-        return a[1]*3600000 + a[2]*60000 + b[1]*1000 + b[2]
-    }
-    function ms2ts(ms,    h, m, s) {
-        if (ms < 0) ms = 0
-        h = int(ms / 3600000); ms = ms % 3600000
-        m = int(ms / 60000); ms = ms % 60000
-        s = int(ms / 1000); ms = ms % 1000
-        return sprintf("%02d:%02d:%02d,%03d", h, m, s, ms)
-    }
-    /^[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} --> [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}/ {
-        split($0, parts, " --> ")
-        start = ts2ms(parts[1]) + shift
-        end = ts2ms(parts[2]) + shift
-        print ms2ts(start) " --> " ms2ts(end)
-        next
-    }
-    { print }
-    ' "$FILE_PATH" > "$output"
-
-    echo "Shift applied: ${shift_val}ms" >&2
+    echo "Shift applied: ${SYNC_SHIFT}ms" >&2
 
     log "Synced file: $output"
 }
@@ -4790,7 +4809,7 @@ COMPLETIONS_SHELL=""
 cmd_completions() {
     local shell="${COMPLETIONS_SHELL:-bash}"
     local commands="auto transcribe get search batch translate info clean sync autosync convert merge mix fix extract embed strip text diff config check providers sources completions manpage"
-    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --strip-existing --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --resume --keep-files --mix --mix-translate --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
+    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --sync-shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --strip-existing --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --resume --keep-files --mix --mix-translate --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
 
     case "$shell" in
         bash)
@@ -4814,7 +4833,7 @@ _subtool() {
         --claude-effort) COMPREPLY=(\$(compgen -W "low medium high" -- "\$cur")); return ;;
         --skip-steps)   COMPREPLY=(\$(compgen -W "download translate sync mix embed" -- "\$cur")); return ;;
         completions)    COMPREPLY=(\$(compgen -W "bash zsh fish" -- "\$cur")); return ;;
-        -o|--output|-q|--query|-l|--lang|-i|--imdb|-s|--season|-e|--episode|-m|--model|--shift|--chunk-size|--max-tokens|--max-parallel|--max-ep|--fallback-langs)
+        -o|--output|-q|--query|-l|--lang|-i|--imdb|-s|--season|-e|--episode|-m|--model|--shift|--sync-shift|--chunk-size|--max-tokens|--max-parallel|--max-ep|--fallback-langs)
             return ;;
         --sub|--ref|--merge-with|--mix-with|--diff-with|--playlist)
             COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
@@ -4896,6 +4915,7 @@ _subtool() {
                         '--from[Source language]:lang:' \\
                         '--to[Target format]:format:(srt vtt ass)' \\
                         '--shift[Shift in ms]:ms:' \\
+                        '--sync-shift[Constant shift in ms applied after ffsubsync in auto]:ms:' \\
                         '--merge-with[Secondary file]:file:_files' \\
                         '--mix-with[Second file for mix]:file:_files' \\
                         '--mix[Enable dual-language mix in auto (optional lang)]' \\
@@ -4983,6 +5003,7 @@ complete -c subtool -l sources -d 'Subtitle sources' -x -a 'opensubtitles-org po
 complete -c subtool -l from -d 'Source language' -x
 complete -c subtool -l to -d 'Target format' -x -a 'srt vtt ass'
 complete -c subtool -l shift -d 'Shift in ms' -x
+complete -c subtool -l sync-shift -d 'Constant shift in ms applied after ffsubsync in auto' -x
 complete -c subtool -l merge-with -d 'Secondary file' -r -F
 complete -c subtool -l mix-with -d 'Second file for mix' -r -F
 complete -c subtool -l mix -d 'Enable dual-language mix in auto (optional lang)'
@@ -5158,6 +5179,9 @@ Target format for convert (srt, vtt, ass)
 .TP
 \fB\-\-shift\fR \fIms\fR
 Shift in ms for sync (e.g., +1500, -800)
+.TP
+\fB\-\-sync\-shift\fR \fIms\fR
+Constant shift in ms applied after ffsubsync in auto mode (e.g., -2000). Persist via AUTO_SYNC_SHIFT config key.
 .TP
 \fB\-\-merge\-with\fR \fIfile\fR
 Secondary file for bilingual merge
@@ -5351,6 +5375,7 @@ parse_args() {
             --fallback-langs) FALLBACK_LANGS="$2"; shift 2 ;;
             --max-ep)      MAX_EPISODE="$2"; shift 2 ;;
             --shift)       SYNC_SHIFT="$2"; shift 2 ;;
+            --sync-shift)  AUTO_SYNC_SHIFT="$2"; shift 2 ;;
             --to)          CONVERT_FORMAT="$2"; shift 2 ;;
             --merge-with)  MERGE_FILE="$2"; shift 2 ;;
             --diff-with)   DIFF_FILE="$2"; shift 2 ;;
