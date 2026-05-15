@@ -1538,8 +1538,13 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 section "mix timestamp source"
 
-# When files have DIFFERENT timestamps, mix must use --mix-with timestamps (not primary)
-# This is critical: primary text on top, but timestamps from --mix-with (secondary arg)
+# When files have DIFFERENT timestamps, the output must use PRIMARY (base) timing.
+# The user's first positional arg is the "base" subtitle — its timestamps drive
+# the output so an offset --mix-with file can't desync the result.
+# (If ffsubsync is installed, --mix-with is also auto-aligned to primary on a
+# temp copy; we disable that here by passing --skip-steps sync... actually
+# cmd_mix doesn't expose skip-steps, so we just rely on ffsubsync producing a
+# result that still maps to the primary timeline.)
 ts_pri="$TMP_DIR/ts_primary.de.srt"
 ts_sec="$TMP_DIR/ts_secondary.fr.srt"
 cat > "$ts_pri" << 'EOF'
@@ -1564,9 +1569,9 @@ EOF
 "$SUBSYNC" mix "$ts_pri" --mix-with "$ts_sec" -o "$TMP_DIR" 2>&1 >/dev/null
 ts_out="$TMP_DIR/ts_primary.mix.srt"
 if [[ -f "$ts_out" ]]; then
-    # Timestamps should come from --mix-with file (FR: 01,000 and 05,000), NOT primary (DE: 10,000 and 20,000)
-    assert_file_contains "mix timestamps: uses --mix-with timing (block 1)" "$ts_out" "00:00:01,000 --> 00:00:03,000"
-    assert_file_contains "mix timestamps: uses --mix-with timing (block 2)" "$ts_out" "00:00:05,000 --> 00:00:07,000"
+    # Timestamps should come from PRIMARY file (DE: 10,000 and 20,000), NOT --mix-with (FR: 01,000 and 05,000)
+    assert_file_contains "mix timestamps: uses primary timing (block 1)" "$ts_out" "00:00:10,000 --> 00:00:13,000"
+    assert_file_contains "mix timestamps: uses primary timing (block 2)" "$ts_out" "00:00:20,000 --> 00:00:23,000"
     # Primary text (DE) should be on top, not italic
     assert_file_contains "mix timestamps: DE text on top" "$ts_out" "Hallo Welt"
     if grep -q "<i>Hallo" "$ts_out"; then
@@ -1576,11 +1581,11 @@ if [[ -f "$ts_out" ]]; then
     fi
     # --mix-with text (FR) should be in italic
     assert_file_contains "mix timestamps: FR text in italic" "$ts_out" "<i>Bonjour"
-    # Must NOT have primary timestamps
-    if grep -q "00:00:10,000" "$ts_out"; then
-        assert "mix timestamps: no primary timing leak" 1
+    # Must NOT have raw secondary timestamps (output is on primary's timeline)
+    if grep -q "00:00:01,000 --> 00:00:03,000" "$ts_out"; then
+        assert "mix timestamps: no secondary timing leak" 1
     else
-        assert "mix timestamps: no primary timing leak" 0
+        assert "mix timestamps: no secondary timing leak" 0
     fi
 else
     assert "mix timestamps: output file found" 1
@@ -2228,7 +2233,7 @@ else
     assert "mix reversed --swap: output file found" 1
 fi
 
-# --swap preserves timestamps from --mix-with file
+# --swap reverses display order but keeps PRIMARY timestamps (the user's base file)
 ts_swap_pri="$TMP_DIR/ts_swap_pri.srt"
 ts_swap_sec="$TMP_DIR/ts_swap_sec.srt"
 cat > "$ts_swap_pri" << 'EOF'
@@ -2252,8 +2257,8 @@ EOF
 "$SUBSYNC" mix "$ts_swap_pri" --mix-with "$ts_swap_sec" --swap -o "$TMP_DIR" 2>&1 >/dev/null
 ts_swap_out="$TMP_DIR/ts_swap_pri.mix.srt"
 if [[ -f "$ts_swap_out" ]]; then
-    # Timestamps from --mix-with (FR: 01,000 and 05,000), even with --swap
-    assert_file_contains "mix --swap timestamps: uses --mix-with timing" "$ts_swap_out" "00:00:01,000 --> 00:00:03,000"
+    # Timestamps come from PRIMARY (DE: 10,000 and 20,000), --swap only changes display order
+    assert_file_contains "mix --swap timestamps: uses primary timing" "$ts_swap_out" "00:00:10,000 --> 00:00:13,000"
     # FR on top (not italic), DE italic
     if grep -q "^Bonjour" "$ts_swap_out" && grep -q "<i>Hallo" "$ts_swap_out"; then
         assert "mix --swap timestamps: FR on top, DE italic" 0

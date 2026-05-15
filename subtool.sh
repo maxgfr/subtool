@@ -1553,7 +1553,8 @@ ${BOLD}OPTIONS${NC}
     --fallback-langs <l1,l2>  Fallback languages (default: en,de,es,pt)
     --max-ep <num>            Max episodes per season (default: 20)
     --shift <ms>              Shift in ms for sync (e.g., +1500, -800)
-    --sync-shift <ms>         Constant shift in ms applied after ffsubsync in auto mode (e.g., -2000). Also configurable as AUTO_SYNC_SHIFT
+    --sync-shift <ms>         Constant shift in ms applied after ffsubsync in auto mode (e.g., -2000).
+                              Also applied alone when --skip-steps sync is set (manual-only sync). AUTO_SYNC_SHIFT in config.
     --to <format>             Target format for convert (srt, vtt, ass)
     --merge-with <file>       Secondary file for bilingual merge
     --mix-with <file>         Second file for mix (dual-language subtitles)
@@ -2549,6 +2550,8 @@ cmd_auto() {
             # Sync target first
             if [[ "$_skip" != *",sync,"* ]]; then
                 $DRY_RUN || _auto_sync "$video_file" "$target_srt" "$target"
+            else
+                $DRY_RUN || _apply_sync_shift_only "$target_srt"
             fi
             if $MIX_MODE && [[ "$_skip" != *",mix,"* ]] && ! $DRY_RUN; then
                 local mix_info=""
@@ -2601,7 +2604,11 @@ cmd_auto() {
                     local mix_file="" mix_embed_title="" mix_source_srt="" mix_source_lang=""
                     local mix_existing_srt="" mix_existing_lang=""
                     # Sync target first
-                    [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
+                    if [[ "$_skip" != *",sync,"* ]]; then
+                        _auto_sync "$video_file" "$target_srt" "$target"
+                    else
+                        _apply_sync_shift_only "$target_srt"
+                    fi
                     if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                         # Extract a second subtitle stream in another language for mixing
                         if [[ -n "$MIX_LANG" ]]; then
@@ -2717,7 +2724,11 @@ cmd_auto() {
                         ((success++)) || true
                         local mix_file="" mix_embed_title="" mix_source_srt="" mix_source_lang=""
                         # Sync target first
-                        [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
+                        if [[ "$_skip" != *",sync,"* ]]; then
+                            _auto_sync "$video_file" "$target_srt" "$target"
+                        else
+                            _apply_sync_shift_only "$target_srt"
+                        fi
                         if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                             local mix_info=""
                             mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
@@ -2832,7 +2843,11 @@ cmd_auto() {
                         ((success++)) || true
                         local mix_file="" mix_embed_title="" mix_source_srt="" mix_source_lang=""
                         # Sync target first
-                        [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
+                        if [[ "$_skip" != *",sync,"* ]]; then
+                            _auto_sync "$video_file" "$target_srt" "$target"
+                        else
+                            _apply_sync_shift_only "$target_srt"
+                        fi
                         if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                             local mix_info=""
                             mix_info=$(_auto_mix "$video_file" "$target_srt" "$target") && {
@@ -2885,11 +2900,19 @@ cmd_auto() {
                 ((success++)) || true
 
                 # ── Step 4: Sync target_srt (same as without --mix) ──
-                [[ "$_skip" != *",sync,"* ]] && _auto_sync "$video_file" "$target_srt" "$target"
+                if [[ "$_skip" != *",sync,"* ]]; then
+                    _auto_sync "$video_file" "$target_srt" "$target"
+                else
+                    _apply_sync_shift_only "$target_srt"
+                fi
                 _normalize_srt_for_mix "$target_srt" || true
                 # ── Step 4a: Also sync existing_srt so both drop the same blocks ──
-                if $MIX_MODE && [[ "$_skip" != *",sync,"* ]]; then
-                    _auto_sync "$video_file" "$existing_srt" "$existing_lang"
+                if $MIX_MODE; then
+                    if [[ "$_skip" != *",sync,"* ]]; then
+                        _auto_sync "$video_file" "$existing_srt" "$existing_lang"
+                    else
+                        _apply_sync_shift_only "$existing_srt"
+                    fi
                 fi
                 $MIX_MODE && _normalize_srt_for_mix "$existing_srt" || true
                 # ── Step 4b: Mix using SYNCED target_srt timestamps ──
@@ -3273,11 +3296,16 @@ _auto_sync() {
     fi
 
     info "Sync: $(basename "$sub") with $(basename "$video") (this may take a few minutes)"
-    # Run ffsubsync with output flowing to stderr so user sees progress
-    if "${ffsubsync_cmd[@]}" "$sync_ref" -i "$sub" -o "$synced" "${ref_stream_args[@]}" >&2 2>&1; then
+    # Capture ffsubsync output so we can inspect it (dropped blocks signal overshoot)
+    # while still streaming to stderr for live progress.
+    local sync_log
+    sync_log=$(mktemp -t subtool_sync.XXXXXX)
+    local sync_ok=false
+    if "${ffsubsync_cmd[@]}" "$sync_ref" -i "$sub" -o "$synced" "${ref_stream_args[@]}" 2>&1 | tee "$sync_log" >&2; then
         if [[ -s "$synced" ]]; then
             mv "$synced" "$sub"
             log "Sync OK: $(basename "$sub")"
+            sync_ok=true
         else
             warn "Sync produced empty file — keeping original"
         fi
@@ -3285,14 +3313,47 @@ _auto_sync() {
         warn "Sync failed — keeping unsynced version"
         rm -f "$synced"
     fi
-    # Apply user-configured constant shift on top of ffsubsync result
+    # Heuristic warning: when ffsubsync's shift pushes many blocks before time 0,
+    # they're silently dropped. That's expected for truncated content but often
+    # signals the shift was too aggressive. Surface it so the user can decide.
+    if $sync_ok; then
+        # ffsubsync wraps lines, so just match the start of the warning string
+        local skipped_neg
+        skipped_neg=$(grep -c "Skipped subtitle at index" "$sync_log" 2>/dev/null || echo 0)
+        skipped_neg="${skipped_neg//[^0-9]/}"
+        if [[ -n "$skipped_neg" && "$skipped_neg" -ge 3 ]]; then
+            warn "Sync dropped $skipped_neg subtitle block(s). ffsubsync may have over-shifted —"
+            warn "  if subs feel offset, try: --sync-shift +<ms> (positive = delay subs)"
+        fi
+    fi
+    rm -f "$sync_log"
+    # Apply user-configured constant shift on top of ffsubsync result.
+    # The shift compensates for video<->subtitle offsets ffsubsync can't detect.
+    # Skip when the reference is itself a subtitle (e.g., mix source aligned to
+    # an already-shifted target_srt) — applying it again would double-shift.
     if [[ -n "$AUTO_SYNC_SHIFT" && "$AUTO_SYNC_SHIFT" != "0" ]]; then
-        if _shift_srt_inplace "$sub" "$AUTO_SYNC_SHIFT"; then
+        local _is_sub_ref=false
+        case "$video" in
+            *.[Ss][Rr][Tt]|*.[Aa][Ss][Ss]|*.[Ss][Ss][Aa]|*.[Vv][Tt][Tt]|*.[Ss][Uu][Bb])
+                _is_sub_ref=true ;;
+        esac
+        if ! $_is_sub_ref && _shift_srt_inplace "$sub" "$AUTO_SYNC_SHIFT"; then
             log "Sync: applied constant shift ${AUTO_SYNC_SHIFT}ms"
         fi
     fi
     # Clean up extracted reference subtitle
     [[ -n "$ref_tmp" ]] && rm -f "$ref_tmp" || true
+}
+
+# Apply only the AUTO_SYNC_SHIFT (no ffsubsync). For use when the sync step is
+# skipped via --skip-steps sync but the user still wants a manual constant shift.
+_apply_sync_shift_only() {
+    local sub="$1"
+    [[ -n "$AUTO_SYNC_SHIFT" && "$AUTO_SYNC_SHIFT" != "0" ]] || return 0
+    [[ -f "$sub" ]] || return 1
+    if _shift_srt_inplace "$sub" "$AUTO_SYNC_SHIFT"; then
+        log "Sync skipped — applied constant shift ${AUTO_SYNC_SHIFT}ms: $(basename "$sub")"
+    fi
 }
 
 # Helper: convert language code to human-readable title for subtitle track metadata
@@ -3481,6 +3542,11 @@ _auto_embed() {
 
     local lang_title
     lang_title=${title_override:-$(_lang_title "$lang")}
+    # MP4/mov_text silently drops 2-letter ISO 639-1 codes ("fr", "de") — the
+    # mov muxer only stores ISO 639-2 (3-letter). Always emit 3-letter so the
+    # language tag survives regardless of container.
+    local lang_iso
+    lang_iso=$(_lang_to_iso639_2 "$lang")
 
     # Build ffmpeg command with proper metadata for ALL subtitle streams
     local ffmpeg_cmd=(ffmpeg -v quiet -i "$video" -i "$sub"
@@ -3489,7 +3555,7 @@ _auto_embed() {
     # Preserve/fix metadata for existing subtitle streams (prevents "piste 1/2" labels)
     local sidx
     for ((sidx=0; sidx<sub_count; sidx++)); do
-        local s_lang s_title
+        local s_lang s_title s_lang_iso
         s_lang=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.language // \"und\"")
         s_title=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.title // \"\"")
         # Auto-detect language if undefined
@@ -3497,11 +3563,12 @@ _auto_embed() {
             s_lang=$(_detect_stream_lang "$video" "$sidx")
         fi
         [[ -z "$s_title" ]] && s_title=$(_lang_title "$s_lang")
-        ffmpeg_cmd+=(-metadata:s:s:"$sidx" language="$s_lang" -metadata:s:s:"$sidx" title="$s_title")
+        s_lang_iso=$(_lang_to_iso639_2 "$s_lang")
+        ffmpeg_cmd+=(-metadata:s:s:"$sidx" language="$s_lang_iso" -metadata:s:s:"$sidx" title="$s_title")
     done
 
     # Set metadata for the new subtitle stream
-    ffmpeg_cmd+=(-metadata:s:s:"$sub_count" language="$lang" -metadata:s:s:"$sub_count" title="$lang_title")
+    ffmpeg_cmd+=(-metadata:s:s:"$sub_count" language="$lang_iso" -metadata:s:s:"$sub_count" title="$lang_title")
     ffmpeg_cmd+=("$tmp_video" -y)
 
     if "${ffmpeg_cmd[@]}" 2>/dev/null && [[ -s "$tmp_video" ]]; then
@@ -4248,20 +4315,52 @@ cmd_mix() {
     header "Mix subtitles (language learning)"
 
     # Default order: --mix-with → primary on top; -l → translated on top. --swap reverses.
-    local do_swap=true
-    [[ -n "$LANG_TARGET" ]] && do_swap=false
+    # Note: in _mix_subtitles, swap=false → primary text on top; primary's timestamps
+    # always drive the output. Primary = user's first positional file = the "base".
+    local do_swap=false
+    [[ -n "$LANG_TARGET" ]] && do_swap=true
     [[ "$SWAP_MIX" == "true" ]] && { [[ "$do_swap" == "true" ]] && do_swap=false || do_swap=true; }
 
     if [[ "$do_swap" == "true" ]]; then
-        info "Top (normal):  $(basename "$primary") [$lang1]"
-        info "Bottom (italic): $(basename "$secondary") [$lang2]"
-    else
         info "Top (normal):  $(basename "$secondary") [$lang2]"
         info "Bottom (italic): $(basename "$primary") [$lang1]"
+    else
+        info "Top (normal):  $(basename "$primary") [$lang1]"
+        info "Bottom (italic): $(basename "$secondary") [$lang2]"
     fi
 
-    # Secondary as primary arg (preserves its timestamps), swap controls display order
-    _mix_subtitles "$secondary" "$primary" "$output" "$do_swap"
+    # In --mix-with mode, sync secondary's timing to the user's base file via
+    # ffsubsync (subtitle-to-subtitle) on a temp copy. This keeps the bottom
+    # text aligned with the top when the two inputs come from different cuts.
+    # In -l mode, translation preserves timestamps — sync is unnecessary.
+    local sec_for_mix="$secondary"
+    local sec_tmp=""
+    if [[ -n "$MIX_FILE" ]]; then
+        local ffsubsync_cmd=()
+        if command -v ffsubsync &>/dev/null; then
+            ffsubsync_cmd=(ffsubsync)
+        elif command -v uvx &>/dev/null; then
+            ffsubsync_cmd=(uvx --with "setuptools<75" ffsubsync)
+        fi
+        if [[ ${#ffsubsync_cmd[@]} -gt 0 ]]; then
+            mkdir -p "$CACHE_DIR"
+            sec_tmp="$CACHE_DIR/_mix_sec_synced_$$.srt"
+            info "Sync: aligning $(basename "$secondary") to $(basename "$primary")"
+            if "${ffsubsync_cmd[@]}" "$primary" -i "$secondary" -o "$sec_tmp" >&2 2>&1 && [[ -s "$sec_tmp" ]]; then
+                sec_for_mix="$sec_tmp"
+                log "Sync OK: secondary aligned to primary"
+            else
+                rm -f "$sec_tmp"
+                sec_tmp=""
+                warn "Sync failed — mixing with original timing"
+            fi
+        fi
+    fi
+
+    # Primary as primary arg — primary's timestamps drive the output.
+    _mix_subtitles "$primary" "$sec_for_mix" "$output" "$do_swap"
+
+    [[ -n "$sec_tmp" && -f "$sec_tmp" ]] && rm -f "$sec_tmp"
 
     log "Mixed file: $output"
 }
@@ -4625,8 +4724,10 @@ cmd_embed() {
     local sub_count
     sub_count=$(echo "$streams_json" | jq '.streams | length' 2>/dev/null || echo "0")
 
-    local sub_title
+    local sub_title sub_lang_iso
     sub_title=$(_lang_title "$sub_lang")
+    # MP4/mov_text silently drops 2-letter ISO 639-1 codes — always emit 3-letter.
+    sub_lang_iso=$(_lang_to_iso639_2 "$sub_lang")
 
     # Build ffmpeg command with proper mapping and metadata for ALL subtitle streams
     local ffmpeg_cmd=(ffmpeg -v quiet -i "$FILE_PATH" -i "$EMBED_SUB"
@@ -4635,7 +4736,7 @@ cmd_embed() {
     # Preserve/fix metadata for existing subtitle streams
     local sidx
     for ((sidx=0; sidx<sub_count; sidx++)); do
-        local s_lang s_title
+        local s_lang s_title s_lang_iso
         s_lang=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.language // \"und\"")
         s_title=$(echo "$streams_json" | jq -r ".streams[$sidx].tags.title // \"\"")
         # Auto-detect language if undefined
@@ -4643,11 +4744,12 @@ cmd_embed() {
             s_lang=$(_detect_stream_lang "$FILE_PATH" "$sidx")
         fi
         [[ -z "$s_title" ]] && s_title=$(_lang_title "$s_lang")
-        ffmpeg_cmd+=(-metadata:s:s:"$sidx" language="$s_lang" -metadata:s:s:"$sidx" title="$s_title")
+        s_lang_iso=$(_lang_to_iso639_2 "$s_lang")
+        ffmpeg_cmd+=(-metadata:s:s:"$sidx" language="$s_lang_iso" -metadata:s:s:"$sidx" title="$s_title")
     done
 
     # Set metadata for the new subtitle stream
-    ffmpeg_cmd+=(-metadata:s:s:"$sub_count" language="$sub_lang" -metadata:s:s:"$sub_count" title="$sub_title")
+    ffmpeg_cmd+=(-metadata:s:s:"$sub_count" language="$sub_lang_iso" -metadata:s:s:"$sub_count" title="$sub_title")
     ffmpeg_cmd+=("$output" -y)
 
     if "${ffmpeg_cmd[@]}" 2>/dev/null && [[ -s "$output" ]]; then
