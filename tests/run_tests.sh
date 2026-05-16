@@ -1700,6 +1700,71 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "mix with translation drop (regression: block-by-index misalignment)"
+
+# Regression test: when translation produces an empty block (LLM returned nothing),
+# _normalize_srt_for_mix drops it in the translated file but keeps it in the source.
+# Block counts diverge → block-by-index pairing misaligns from that point onward.
+# Fix: when counts differ, fall back to timestamp-overlap matching.
+tdrop_de="$TMP_DIR/tdrop.de.srt"
+tdrop_fr="$TMP_DIR/tdrop.fr.srt"
+cat > "$tdrop_de" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,000
+DE one
+
+2
+00:00:04,000 --> 00:00:06,000
+DE two
+
+3
+00:00:07,000 --> 00:00:09,000
+DE three
+
+4
+00:00:10,000 --> 00:00:12,000
+DE four
+EOF
+# FR has block 3 with only whitespace (translation lost it)
+cat > "$tdrop_fr" << 'EOF'
+1
+00:00:01,000 --> 00:00:03,000
+FR one
+
+2
+00:00:04,000 --> 00:00:06,000
+FR two
+
+3
+00:00:07,000 --> 00:00:09,000
+
+
+4
+00:00:10,000 --> 00:00:12,000
+FR four
+EOF
+"$SUBSYNC" mix "$tdrop_de" --mix-with "$tdrop_fr" -o "$TMP_DIR" 2>&1 >/dev/null
+tdrop_out="$TMP_DIR/tdrop.mix.srt"
+if [[ -f "$tdrop_out" ]]; then
+    # The critical assertion: "DE four" must pair with "FR four", NOT "FR three"
+    # (which would be the misaligned result of block-by-index after a drop)
+    if awk '/DE four/{found=1; getline; if ($0 ~ /FR four/) print "OK"; else if ($0 ~ /<i>/) print "MISALIGNED:" $0}' "$tdrop_out" | grep -q "^OK$"; then
+        assert "mix translation-drop: DE four paired with FR four" 0
+    else
+        debug_line=$(awk '/DE four/{found=1; getline; print; exit}' "$tdrop_out")
+        assert "mix translation-drop: DE four paired with FR four (got: $debug_line)" 1
+    fi
+    # DE three should NOT be paired with FR four (the asymmetric drop case)
+    if grep -A2 "DE three" "$tdrop_out" | grep -q "FR four"; then
+        assert "mix translation-drop: no shift-by-one misalignment" 1
+    else
+        assert "mix translation-drop: no shift-by-one misalignment" 0
+    fi
+else
+    assert "mix translation-drop: output file found" 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 section "mix real subtitles (Die Discounter)"
 
 # Test with real synced DE/FR subtitle files and known-good reference mix

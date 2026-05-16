@@ -46,6 +46,9 @@ CLAUDE_EFFORT=""
 SKIP_STEPS=""
 TRANSLATE_MAX_PARALLEL=""
 AUTO_SYNC_SHIFT=""
+# Set by _auto_sync after each invocation. Lets callers (e.g. _auto_mix) detect
+# sub-to-sub sync failure and choose an appropriate fallback.
+_LAST_SYNC_OK=false
 NO_RESUME=true
 PLAYLIST_FILE=""
 DIFF_FILE=""
@@ -2920,7 +2923,6 @@ cmd_auto() {
                 if $MIX_MODE && [[ "$_skip" != *",mix,"* ]]; then
                     local mix_output="${dir_name}/${name_no_ext}.mix.srt"
                     local src_lang="${existing_lang:-}"
-                    # Both files synced: same block count, matching timestamps
                     # Default: target lang on top (normal), source/learning lang on bottom (italic).
                     local do_swap=false
                     [[ "$SWAP_MIX" == "true" ]] && do_swap=true
@@ -2929,7 +2931,17 @@ cmd_auto() {
                     else
                         info "Mixing: $target (top) + $src_lang (bottom, italic)"
                     fi
-                    _mix_subtitles "$target_srt" "$existing_srt" "$mix_output" "$do_swap"
+                    # Choose match mode dynamically: block when counts match, timestamp
+                    # when they don't. Translation can drop blocks (empty/whitespace
+                    # output), which would silently misalign block-by-index pairing.
+                    local _t_blocks _s_blocks _tx_mode="block"
+                    _t_blocks=$(_count_srt_blocks "$target_srt")
+                    _s_blocks=$(_count_srt_blocks "$existing_srt")
+                    if [[ "$_t_blocks" -eq 0 || "$_s_blocks" -eq 0 || "$_t_blocks" -ne "$_s_blocks" ]]; then
+                        _tx_mode="timestamp"
+                        debug "Mix (translate path): block counts differ ($_t_blocks vs $_s_blocks) — timestamp mode" || true
+                    fi
+                    _mix_subtitles "$target_srt" "$existing_srt" "$mix_output" "$do_swap" "$_tx_mode"
                     log "Mixed: $(basename "$mix_output")"
                     mix_file="$mix_output"
                     if [[ -n "$src_lang" ]]; then
@@ -3106,9 +3118,23 @@ _auto_mix() {
     fi
 
     # Sync mix_source against target_srt (subtitle-to-subtitle) for block alignment.
-    # When sync succeeds, both files should share the same timeline and block layout,
-    # which is more stable for long files than repeatedly re-matching by overlap.
+    # When sync succeeds, both files share the same timeline (including any
+    # AUTO_SYNC_SHIFT already applied to target_srt via the earlier video sync).
+    # This sub-to-sub sync is internal mix alignment — not the same thing as the
+    # video<->subtitle sync that --skip-steps sync controls — so we run it even
+    # in skip-steps-sync mode. On failure, fall back to a direct video sync so
+    # mix_source gets ffsubsync's correction + AUTO_SYNC_SHIFT for its standalone
+    # track (skip the fallback when the user explicitly opted out of video sync).
     _auto_sync "$target_srt" "$mix_source" "$mix_lang"
+    if ! $_LAST_SYNC_OK; then
+        local _am_skip=",${SKIP_STEPS:-},"
+        if [[ "$_am_skip" != *",sync,"* ]]; then
+            debug "Mix: sub-to-sub sync failed — falling back to video sync for mix_source" || true
+            _auto_sync "$video" "$mix_source" "$mix_lang"
+        else
+            debug "Mix: sub-to-sub sync failed — skipping video fallback (--skip-steps sync)" || true
+        fi
+    fi
     _normalize_srt_for_mix "$target_srt" || true
     _normalize_srt_for_mix "$mix_source" || true
 
@@ -3123,15 +3149,17 @@ _auto_mix() {
         info "Mixing: $target (top) + $mix_lang (bottom, italic)"
     fi
     # Prefer block matching after subtitle-to-subtitle sync to avoid drift on long files.
-    # Fall back to timestamp overlap only if sync did not fully normalize block counts.
+    # Fall back to timestamp overlap whenever counts diverge — any diff means a block
+    # was dropped (e.g. translation produced empty text), which would silently misalign
+    # everything from that point onward under block-by-index pairing.
     local _target_blocks _mix_blocks _mix_mode="block"
-    _target_blocks=$(grep -cE '^[0-9]+$' "$target_srt" 2>/dev/null || echo 0)
-    _mix_blocks=$(grep -cE '^[0-9]+$' "$mix_source" 2>/dev/null || echo 0)
+    _target_blocks=$(_count_srt_blocks "$target_srt")
+    _mix_blocks=$(_count_srt_blocks "$mix_source")
     if [[ "$_target_blocks" -eq 0 || "$_mix_blocks" -eq 0 ]]; then
         _mix_mode="timestamp"
-    elif [[ "$((_target_blocks > _mix_blocks ? _target_blocks - _mix_blocks : _mix_blocks - _target_blocks))" -gt 2 ]]; then
+    elif [[ "$_target_blocks" -ne "$_mix_blocks" ]]; then
         _mix_mode="timestamp"
-        debug "Mix: block counts still differ after sync ($_target_blocks vs $_mix_blocks) — using timestamp mode" || true
+        debug "Mix: block counts differ ($_target_blocks vs $_mix_blocks) — using timestamp mode" || true
     fi
 
     _mix_subtitles "$target_srt" "$mix_source" "$mix_output" "$do_swap" "$_mix_mode"
@@ -3263,6 +3291,9 @@ _shift_srt_inplace() {
 # Helper for auto-sync (sync subtitle with video via ffsubsync)
 _auto_sync() {
     local video="$1" sub="$2" lang="${3:-}"
+    # Reset success indicator at entry — otherwise an early return (e.g. ffsubsync
+    # not installed) would leave callers reading a stale value from a previous call.
+    _LAST_SYNC_OK=false
     # Determine ffsubsync command
     local ffsubsync_cmd=()
     if command -v ffsubsync &>/dev/null; then
@@ -3299,7 +3330,7 @@ _auto_sync() {
     # Capture ffsubsync output so we can inspect it (dropped blocks signal overshoot)
     # while still streaming to stderr for live progress.
     local sync_log
-    sync_log=$(mktemp -t subtool_sync.XXXXXX)
+    sync_log=$(mktemp -t subtool_sync.XXXXXX 2>/dev/null) || sync_log="/dev/null"
     local sync_ok=false
     if "${ffsubsync_cmd[@]}" "$sync_ref" -i "$sub" -o "$synced" "${ref_stream_args[@]}" 2>&1 | tee "$sync_log" >&2; then
         if [[ -s "$synced" ]]; then
@@ -3327,10 +3358,15 @@ _auto_sync() {
         fi
     fi
     rm -f "$sync_log"
+    # Expose sync success via global so callers can fall back (e.g. sub-to-sub
+    # failure should trigger a video-sync retry, not just a blind shift).
+    _LAST_SYNC_OK="$sync_ok"
     # Apply user-configured constant shift on top of ffsubsync result.
     # The shift compensates for video<->subtitle offsets ffsubsync can't detect.
-    # Skip when the reference is itself a subtitle (e.g., mix source aligned to
-    # an already-shifted target_srt) — applying it again would double-shift.
+    # Skip in sub-to-sub mode (ref is an SRT): the sub was aligned to a target
+    # that already carries the shift, so re-applying would double-shift. On sync
+    # failure in sub-ref mode, the caller is responsible for falling back to a
+    # video sync — applying just the shift here would give wrong absolute timing.
     if [[ -n "$AUTO_SYNC_SHIFT" && "$AUTO_SYNC_SHIFT" != "0" ]]; then
         local _is_sub_ref=false
         case "$video" in
@@ -3343,6 +3379,15 @@ _auto_sync() {
     fi
     # Clean up extracted reference subtitle
     [[ -n "$ref_tmp" ]] && rm -f "$ref_tmp" || true
+}
+
+# Count valid block indexes in an SRT file. Tolerates UTF-8 BOM and CRLF line
+# endings so callers don't get a spurious 0 (which would falsely flip mix logic
+# into timestamp-mode) for otherwise valid files.
+_count_srt_blocks() {
+    local file="$1"
+    [[ -f "$file" ]] || { echo 0; return 0; }
+    sed '1s/^\xef\xbb\xbf//' "$file" 2>/dev/null | tr -d '\r' | grep -cE '^[0-9]+$' 2>/dev/null || echo 0
 }
 
 # Apply only the AUTO_SYNC_SHIFT (no ffsubsync). For use when the sync step is
@@ -4041,12 +4086,15 @@ _mix_subtitles() {
     local tmp_sec="$CACHE_DIR/_mix_sec_$$.txt"
     mkdir -p "$CACHE_DIR"
 
-    # Parse SRT: output "START|END|TEXT" per block (text newlines as \n literal)
+    # Parse SRT: output "START|END|TEXT" per block (text newlines as \n literal).
+    # Empty-text blocks are emitted with an empty third field — dropping them here
+    # would break block-by-index pairing when one side has more empties than the other
+    # (e.g. translation produced whitespace-only text for some blocks).
     _mix_parse_srt() {
         sed '1s/^\xef\xbb\xbf//' "$1" | tr -d '\r' | awk '
         BEGIN { state = "init"; start = ""; end_ts = ""; txt = ""; SEP = "<_NL_>" }
         function flush() {
-            if (start == "" || txt == "") { start = ""; end_ts = ""; txt = ""; return }
+            if (start == "") { start = ""; end_ts = ""; txt = ""; return }
             printf "%s|%s|%s\n", start, end_ts, txt
             start = ""; end_ts = ""; txt = ""
         }
@@ -4357,8 +4405,19 @@ cmd_mix() {
         fi
     fi
 
+    # Choose match mode: block-by-index when counts match, timestamp-overlap when
+    # they don't. ffsubsync's resync above (or independent sources) can drop blocks
+    # asymmetrically — block-by-index would then misalign every block past the gap.
+    local _p_blocks _s_blocks _mx_mode="block"
+    _p_blocks=$(_count_srt_blocks "$primary")
+    _s_blocks=$(_count_srt_blocks "$sec_for_mix")
+    if [[ "$_p_blocks" -eq 0 || "$_s_blocks" -eq 0 || "$_p_blocks" -ne "$_s_blocks" ]]; then
+        _mx_mode="timestamp"
+        debug "cmd_mix: block counts differ ($_p_blocks vs $_s_blocks) — timestamp mode" || true
+    fi
+
     # Primary as primary arg — primary's timestamps drive the output.
-    _mix_subtitles "$primary" "$sec_for_mix" "$output" "$do_swap"
+    _mix_subtitles "$primary" "$sec_for_mix" "$output" "$do_swap" "$_mx_mode"
 
     [[ -n "$sec_tmp" && -f "$sec_tmp" ]] && rm -f "$sec_tmp"
 
