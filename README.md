@@ -62,12 +62,14 @@ sudo mv subtool /usr/local/bin/
 | Provider | ID | Default Model | Description |
 |---|---|---|---|
 | **Claude Code** | `claude-code` | `haiku` | Claude Code CLI (effort low). No API key required. |
-| **OpenAI Codex** | `codex` | Codex CLI config | Codex CLI in ephemeral, read-only mode. No API key environment variable required. |
+| **OpenAI Codex** | `codex` | Codex CLI config | Codex CLI in ephemeral, read-only mode. Requires `--trust-codex-input`; no API key environment variable required. |
 | **Z.ai Coding Plan** | `zai-codeplan` | `glm-4.7` | Z.ai Coding Plan API (`ZAI_API_KEY`) |
 | **OpenAI** | `openai` | `gpt-5-mini` | OpenAI Chat Completions API |
 | **Claude API** | `claude` | `claude-haiku-4-5` | Anthropic Messages API |
 | **Mistral** | `mistral` | `mistral-small-latest` | Mistral AI API |
 | **Gemini** | `gemini` | `gemini-2.5-flash` | Google Gemini API |
+
+Codex is an agentic CLI whose configured tools may read local files. Subtool therefore refuses to send subtitle content to Codex unless each invocation includes `--trust-codex-input`. Use that option only after you trust the subtitle source; downloaded subtitles can contain prompt-injection text.
 
 ```bash
 # Default: Google Translate (fast)
@@ -75,8 +77,8 @@ subtool translate subs.srt -l fr --from de
 
 # Use an AI provider for higher quality
 subtool translate subs.srt -l fr -p claude-code -m sonnet
-subtool translate subs.srt -l fr -p codex          # uses the model configured in Codex
-subtool translate subs.srt -l fr -p codex -m <model-id>
+subtool translate subs.srt -l fr -p codex --trust-codex-input # uses the model configured in Codex
+subtool translate subs.srt -l fr -p codex --trust-codex-input -m <model-id>
 subtool translate subs.srt -l fr -p openai
 ```
 
@@ -103,7 +105,7 @@ subtool transcribe movie.mkv --transcribe-provider openai-api  # use cloud API
 # Auto mode: download + translate + sync + embed — one command
 subtool auto ~/Movies/Die.Discounter -l fr               # all-in-one (Google Translate)
 subtool auto ~/Movies/Die.Discounter -l fr -p claude-code # use Claude for translation
-subtool auto ~/Movies/Die.Discounter -l fr -p codex       # use Codex for translation
+subtool auto ~/Movies/Die.Discounter -l fr -p codex --trust-codex-input # only for trusted subtitle sources
 subtool auto ~/Movies/Die.Discounter -l fr -p openai      # use OpenAI for translation
 subtool auto movie.mkv -l fr                              # single file
 subtool auto movie.mkv -l fr --mix                        # dual-language: auto-detect + FR
@@ -137,7 +139,7 @@ subtool search -q "Parasite" -l en
 # Translate subtitles (default: Google Translate — fast, free)
 subtool translate subs.srt -l fr --from de
 subtool translate subs.srt -l fr --from de -p claude-code    # use AI instead
-subtool translate subs.srt -l fr --from de -p codex          # use Codex CLI
+subtool translate subs.srt -l fr --from de -p codex --trust-codex-input # use Codex CLI for trusted input
 
 # Subtitle info
 subtool info subs.srt

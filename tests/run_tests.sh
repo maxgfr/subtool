@@ -100,6 +100,7 @@ assert_output_contains "--help contains --dry-run" "$out" "\-\-dry-run"
 assert_output_contains "--help contains --json" "$out" "\-\-json"
 assert_output_contains "--help contains --verbose" "$out" "\-\-verbose"
 assert_output_contains "--help contains --quiet" "$out" "\-\-quiet"
+assert_output_contains "--help contains --trust-codex-input" "$out" "\-\-trust-codex-input"
 assert_output_contains "--help contains transcribe" "$out" "transcribe"
 assert_output_contains "--help contains --whisper-model" "$out" "\-\-whisper-model"
 assert_output_contains "--help contains --no-transcribe" "$out" "\-\-no-transcribe"
@@ -576,14 +577,31 @@ chmod +x "$codex_bin/codex"
 
 codex_args_default="$TMP_DIR/codex-default.args"
 codex_stdin_default="$TMP_DIR/codex-default.stdin"
-mkdir -p "$TMP_DIR/codex-default-config/subtool"
+mkdir -p "$TMP_DIR/codex-default-config/subtool" "$TMP_DIR/codex-untrusted-config/subtool"
 printf '%s\n' 'AI_MODEL="stale-config-model"' > "$TMP_DIR/codex-default-config/subtool/config"
+printf '%s\n' 'TRUST_CODEX_INPUT=true' > "$TMP_DIR/codex-untrusted-config/subtool/config"
+if PATH="$codex_bin:$PATH" \
+    CODEX_ARGS_FILE="$TMP_DIR/codex-untrusted.args" \
+    CODEX_STDIN_FILE="$TMP_DIR/codex-untrusted.stdin" \
+    XDG_CONFIG_HOME="$TMP_DIR/codex-untrusted-config" \
+    XDG_CACHE_HOME="$TMP_DIR/codex-untrusted-cache" \
+        "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex -o "$codex_out_default" >/dev/null 2>&1; then
+    codex_untrusted_rc=0
+else
+    codex_untrusted_rc=$?
+fi
+assert_exit_code "translate codex: untrusted input is rejected by default" "1" "$codex_untrusted_rc"
+if [[ ! -e "$TMP_DIR/codex-untrusted.args" ]]; then
+    assert "translate codex: untrusted input does not invoke Codex" 0
+else
+    assert "translate codex: untrusted input does not invoke Codex" 1
+fi
 PATH="$codex_bin:$PATH" \
 CODEX_ARGS_FILE="$codex_args_default" \
 CODEX_STDIN_FILE="$codex_stdin_default" \
 XDG_CONFIG_HOME="$TMP_DIR/codex-default-config" \
 XDG_CACHE_HOME="$TMP_DIR/codex-default-cache" \
-    "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex -o "$codex_out_default" >/dev/null 2>&1
+    "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex --trust-codex-input -o "$codex_out_default" >/dev/null 2>&1
 assert_file_exists "translate codex: file created" "$codex_out_default/basic.en.srt"
 assert_file_contains "translate codex: preserves timestamps" "$codex_out_default/basic.en.srt" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
 assert_file_contains "translate codex: rebuilds translated text" "$codex_out_default/basic.en.srt" 'Welcome to Kolinski'
@@ -603,7 +621,7 @@ CODEX_ARGS_FILE="$codex_args_model" \
 CODEX_STDIN_FILE="$codex_stdin_model" \
 XDG_CONFIG_HOME="$TMP_DIR/codex-model-config" \
 XDG_CACHE_HOME="$TMP_DIR/codex-model-cache" \
-    "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex -m codex-test-model -o "$codex_out_model" >/dev/null 2>&1
+    "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex --trust-codex-input -m codex-test-model -o "$codex_out_model" >/dev/null 2>&1
 assert_file_contains "translate codex: forwards explicit model flag" "$codex_args_model" '^-m$'
 assert_file_contains "translate codex: forwards explicit model value" "$codex_args_model" '^codex-test-model$'
 
@@ -615,7 +633,7 @@ if PATH="$codex_bin:$PATH" \
     CODEX_MALFORMED_OUTPUT=true \
     XDG_CONFIG_HOME="$TMP_DIR/codex-malformed-config" \
     XDG_CACHE_HOME="$TMP_DIR/codex-malformed-cache" \
-        "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex -o "$codex_out_malformed" >/dev/null 2>&1; then
+        "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex --trust-codex-input -o "$codex_out_malformed" >/dev/null 2>&1; then
     malformed_rc=0
 else
     malformed_rc=$?
@@ -643,7 +661,7 @@ if PATH="$codex_bin:$PATH" \
     CODEX_FORCE_FAILURE=true \
     XDG_CONFIG_HOME="$TMP_DIR/codex-failed-config" \
     XDG_CACHE_HOME="$TMP_DIR/codex-failed-cache" \
-        "$SUBSYNC" translate "$large_codex_srt" -l fr --from en -p codex --chunk-size 500 --max-parallel 2 -o "$codex_out_failed" >/dev/null 2>&1; then
+        "$SUBSYNC" translate "$large_codex_srt" -l fr --from en -p codex --trust-codex-input --chunk-size 500 --max-parallel 2 -o "$codex_out_failed" >/dev/null 2>&1; then
     failed_chunks_rc=0
 else
     failed_chunks_rc=$?
@@ -658,6 +676,29 @@ if [[ ! -e "$codex_out_failed/codex-large.fr.srt" ]]; then
 else
     assert "translate codex: all failed chunks create no output" 1
 fi
+
+# A failed Google translation must not delete a target file that predates the
+# command. Mock translate-shell at the process boundary so this stays offline.
+google_fail_bin="$TMP_DIR/google-fail-bin"
+google_preserve_out="$TMP_DIR/google-preserve"
+mkdir -p "$google_fail_bin" "$google_preserve_out"
+cat > "$google_fail_bin/trans" <<'MOCK_TRANS_FAILURE'
+#!/usr/bin/env bash
+exit 1
+MOCK_TRANS_FAILURE
+chmod +x "$google_fail_bin/trans"
+printf '%s\n' 'existing target sentinel' > "$google_preserve_out/basic.fr.srt"
+if PATH="$google_fail_bin:$PATH" \
+    XDG_CONFIG_HOME="$TMP_DIR/google-preserve-config" \
+    XDG_CACHE_HOME="$TMP_DIR/google-preserve-cache" \
+        "$SUBSYNC" translate "$FIXTURES/basic.srt" -l fr --from de -p google -o "$google_preserve_out" >/dev/null 2>&1; then
+    google_failure_rc=0
+else
+    google_failure_rc=$?
+fi
+assert_exit_code "translate google: all failed chunks return nonzero" "1" "$google_failure_rc"
+assert_file_contains "translate google: failed translation preserves existing target" \
+    "$google_preserve_out/basic.fr.srt" '^existing target sentinel$'
 
 if [[ -n "${ZAI_API_KEY:-}" ]]; then
     "$SUBSYNC" translate "$FIXTURES/basic.srt" -l fr --from de -p zai-codeplan -o "$TMP_DIR" 2>&1
@@ -3231,12 +3272,15 @@ section "Completions: shell completions"
 out=$("$SUBSYNC" completions bash 2>/dev/null)
 assert_output_contains "bash completions: function" "$out" "_subtool"
 assert_output_contains "bash completions: complete" "$out" "complete -F _subtool"
+assert_output_contains "bash completions: trusted Codex option" "$out" "\-\-trust-codex-input"
 
 out=$("$SUBSYNC" completions zsh 2>/dev/null)
 assert_output_contains "zsh completions: compdef" "$out" "#compdef subtool"
+assert_output_contains "zsh completions: trusted Codex option" "$out" "\-\-trust-codex-input"
 
 out=$("$SUBSYNC" completions fish 2>/dev/null)
 assert_output_contains "fish completions: complete" "$out" "complete -c subtool"
+assert_output_contains "fish completions: trusted Codex option" "$out" "trust-codex-input"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MANPAGE COMMAND
@@ -3249,6 +3293,7 @@ assert_output_contains "manpage: COMMANDS section" "$out" ".SH COMMANDS"
 assert_output_contains "manpage: OPTIONS section" "$out" ".SH OPTIONS"
 assert_output_contains "manpage: text command" "$out" "Export plain text"
 assert_output_contains "manpage: diff command" "$out" "Compare two subtitle"
+assert_output_contains "manpage: trusted Codex option" "$out" "trust.*codex.*input"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FUZZY SEARCH NORMALIZATION
@@ -3540,6 +3585,41 @@ MOCK_TRANS
         assert "trfail cleanup: target SRT not created (translation failed)" 1
     else
         assert "trfail cleanup: target SRT not created (translation failed)" 0
+    fi
+
+    # Exercise the LLM single-call path through auto's conditional
+    # `elif translate_subtitle ...`; this used to turn a provider error into a
+    # successful source-text rebuild.
+    _trfail_codex_dir="$TMP_DIR/trfail_codex_test"
+    _trfail_codex_cache="$TMP_DIR/trfail_codex_cache"
+    mkdir -p "$_trfail_codex_dir"
+    cp "$_auto_video_de" "$_trfail_codex_dir/movie.mkv"
+    cat > "$_trfail_bin/codex" <<'MOCK_CODEX_FAILURE'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 7
+MOCK_CODEX_FAILURE
+    chmod +x "$_trfail_bin/codex"
+
+    _trfail_codex_output=$(MOCK_CURL_LOG="$TMP_DIR/trfail-codex-curl.log" \
+        MOCK_SUBTITLE_FILE="$FIXTURES/basic.srt" \
+        PATH="$_trfail_bin:$PATH" \
+        XDG_CONFIG_HOME="$TMP_DIR/trfail_codex_config" \
+        XDG_CACHE_HOME="$_trfail_codex_cache" \
+            "$SUBSYNC" auto "$_trfail_codex_dir/movie.mkv" -l fr -p codex --trust-codex-input \
+                --fallback-langs de --no-transcribe --skip-steps sync --no-embed 2>&1 || true)
+    assert_output_contains "trfail codex: conditional single-call reports failure" \
+        "$_trfail_codex_output" 'Translation failed: movie\.mkv'
+    if [[ -e "$_trfail_codex_dir/movie.fr.srt" ]]; then
+        assert "trfail codex: failed single-call creates no target SRT" 1
+    else
+        assert "trfail codex: failed single-call creates no target SRT" 0
+    fi
+    if find "$_trfail_codex_cache/subtool" -type f \
+        \( -name 'translate_*.txt' -o -name '*.codex_err' \) -print -quit 2>/dev/null | grep -q .; then
+        assert "trfail codex: failed single-call cleans translation temporaries" 1
+    else
+        assert "trfail codex: failed single-call cleans translation temporaries" 0
     fi
 else
     assert "trfail cleanup: test video created" 1

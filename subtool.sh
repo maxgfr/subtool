@@ -28,6 +28,7 @@ FALLBACK_LANGS="en,de,es,pt"
 MAX_EPISODE=20
 AI_MODEL=""
 AI_MODEL_EXPLICIT=false
+TRUST_CODEX_INPUT=false
 AUTO_SELECT=false
 AUTO_EMBED=false
 NO_EMBED=false
@@ -900,7 +901,6 @@ translate_with_google() {
     done
     if [[ $translated_chunks -eq 0 ]]; then
         rm -f "$text_file" "$map_file" "${chunk_prefix}"_*.txt 2>/dev/null || true
-        rm -f "$output"
         err "Google Translate produced no translated output"
         return 1
     fi
@@ -1027,6 +1027,11 @@ translate_with_codex() {
     local model=""
     $AI_MODEL_EXPLICIT && model="${AI_MODEL:-}"
     info "Translating with Codex CLI${model:+ ($model)}..."
+
+    if ! $TRUST_CODEX_INPUT; then
+        err "Codex input is untrusted by default because Codex tools may read local files. Re-run with --trust-codex-input only for subtitle content you trust."
+        return 1
+    fi
 
     if ! command -v codex &>/dev/null; then
         err "Codex CLI not installed. Install it: npm install -g @openai/codex"
@@ -1433,7 +1438,11 @@ translate_subtitle() {
 
         if [[ $total_lines -le $single_call_threshold ]]; then
             # Single call — translate all text at once
-            _translate_dispatch "$text_file" "$text_translated" "$src_lang" "$target_lang" "$provider"
+            if ! _translate_dispatch "$text_file" "$text_translated" "$src_lang" "$target_lang" "$provider"; then
+                rm -f "$structure_file" "$text_file" "$text_translated"
+                err "Translation provider failed"
+                return 1
+            fi
 
             # If LLM truncated output, retry the missing portion
             if [[ -s "$text_translated" ]]; then
@@ -1611,6 +1620,7 @@ ${BOLD}OPTIONS${NC}
     -o, --output <dir>        Output directory (default: .)
     -p, --provider <provider> Translation provider (google|codex|claude-code|zai-codeplan|openai|claude|mistral|gemini)
     -m, --model <model>       AI model to use (overrides provider default model)
+    --trust-codex-input       Allow Codex to process trusted subtitle content (its tools may read local files)
     --sources <src1,src2>     Sources (default: opensubtitles-org. Available: podnapisi)
     --from <lang>             Source language for translation
     --fallback-langs <l1,l2>  Fallback languages (default: en,de,es,pt)
@@ -5042,7 +5052,7 @@ COMPLETIONS_SHELL=""
 cmd_completions() {
     local shell="${COMPLETIONS_SHELL:-bash}"
     local commands="auto transcribe get search batch translate info clean sync autosync convert merge mix fix extract embed strip text diff config check providers sources completions manpage"
-    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --sources --from --fallback-langs --max-ep --shift --sync-shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --strip-existing --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --resume --keep-files --mix --mix-translate --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
+    local opts="-q --query -l --lang -i --imdb -s --season -e --episode -o --output -p --provider -m --model --trust-codex-input --sources --from --fallback-langs --max-ep --shift --sync-shift --to --merge-with --mix-with --diff-with --playlist --ref --ref-stream --sub --track --all --url --embed --no-embed --force-embed --strip-existing --force-translate --transcribe-provider --whisper-model --chunk-size --max-tokens --no-transcribe --force-transcribe --claude-effort --skip-steps --max-parallel --resume --keep-files --mix --mix-translate --swap --auto --dry-run --json --verbose --quiet -h --help -v --version"
 
     case "$shell" in
         bash)
@@ -5144,6 +5154,7 @@ _subtool() {
                         '--provider[Translation provider]:provider:(google codex claude-code openai claude mistral gemini zai-codeplan)' \\
                         '-m[AI model]:model:' \\
                         '--model[AI model]:model:' \\
+                        '--trust-codex-input[Allow Codex to process trusted subtitle content]' \\
                         '--sources[Subtitle sources]:sources:(opensubtitles-org podnapisi)' \\
                         '--from[Source language]:lang:' \\
                         '--to[Target format]:format:(srt vtt ass)' \\
@@ -5232,6 +5243,7 @@ complete -c subtool -s e -l episode -d 'Episode number' -x
 complete -c subtool -s o -l output -d 'Output directory' -r -F
 complete -c subtool -s p -l provider -d 'Translation provider' -x -a 'google codex claude-code openai claude mistral gemini zai-codeplan'
 complete -c subtool -s m -l model -d 'AI model' -x
+complete -c subtool -l trust-codex-input -d 'Allow Codex to process trusted subtitle content'
 complete -c subtool -l sources -d 'Subtitle sources' -x -a 'opensubtitles-org podnapisi'
 complete -c subtool -l from -d 'Source language' -x
 complete -c subtool -l to -d 'Target format' -x -a 'srt vtt ass'
@@ -5400,6 +5412,9 @@ Translation provider (google|codex|claude-code|openai|claude|mistral|gemini|zai-
 .TP
 \fB\-m\fR, \fB\-\-model\fR \fImodel\fR
 AI model to use
+.TP
+\fB\-\-trust\-codex\-input\fR
+Allow Codex to process trusted subtitle content. Codex tools may read local files.
 .TP
 \fB\-\-sources\fR \fIsrc1,src2\fR
 Subtitle sources (default: opensubtitles-org)
@@ -5603,6 +5618,7 @@ parse_args() {
             -o|--output)   OUTPUT_DIR="$2"; shift 2 ;;
             -p|--provider) AI_PROVIDER="$2"; shift 2 ;;
             -m|--model)    AI_MODEL="$2"; AI_MODEL_EXPLICIT=true; shift 2 ;;
+            --trust-codex-input) TRUST_CODEX_INPUT=true; shift ;;
             --sources)     SOURCES="$2"; shift 2 ;;
             --from)        SRC_LANG="$2"; shift 2 ;;
             --fallback-langs) FALLBACK_LANGS="$2"; shift 2 ;;
@@ -5694,8 +5710,9 @@ cleanup() {
 main() {
     load_config
     # Configuration may provide AI_MODEL for API providers, but only the CLI
-    # parser can mark a Codex model override as explicit.
+    # parser can mark a Codex model override or trust subtitle input explicitly.
     AI_MODEL_EXPLICIT=false
+    TRUST_CODEX_INPUT=false
     parse_args "$@"
 
     [[ -z "$COMMAND" ]] && { usage; exit 0; }
