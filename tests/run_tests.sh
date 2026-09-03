@@ -109,6 +109,7 @@ assert_output_contains "--help contains --mix-translate" "$out" "\-\-mix-transla
 
 out=$("$SUBSYNC" providers 2>&1)
 assert_output_contains "providers lists claude-code" "$out" "claude-code"
+assert_output_contains "providers lists codex" "$out" "codex"
 assert_output_contains "providers lists zai-codeplan" "$out" "zai-codeplan"
 assert_output_contains "providers lists openai" "$out" "openai"
 assert_output_contains "providers lists gemini" "$out" "gemini"
@@ -548,6 +549,115 @@ fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "translate (API - optional)"
+
+# Codex CLI is exercised through a deterministic process-boundary mock. This
+# verifies the public command without requiring network access or user auth.
+codex_bin="$TMP_DIR/codex-bin"
+codex_out_default="$TMP_DIR/codex-default"
+codex_out_model="$TMP_DIR/codex-model"
+mkdir -p "$codex_bin" "$codex_out_default" "$codex_out_model"
+cat > "$codex_bin/codex" <<'MOCK_CODEX'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CODEX_ARGS_FILE"
+[[ "${CODEX_FORCE_FAILURE:-false}" == "true" ]] && exit 7
+cat > "$CODEX_STDIN_FILE"
+if [[ "${CODEX_MALFORMED_OUTPUT:-false}" == "true" ]]; then
+    printf '%s\n' 'I cannot provide numbered subtitle lines.'
+    exit 0
+fi
+printf '%s\n' \
+    '1: Welcome to Kolinski!' \
+    '2: Here you will find the best offers <br> in all of Eimbuettel.' \
+    '3: Tara, could you please <br> stock the shelves?' \
+    '4: I am on break right now, Peter. <br> I am entitled to it.' \
+    '5: We do not take breaks here! <br> We are a discount store!'
+MOCK_CODEX
+chmod +x "$codex_bin/codex"
+
+codex_args_default="$TMP_DIR/codex-default.args"
+codex_stdin_default="$TMP_DIR/codex-default.stdin"
+mkdir -p "$TMP_DIR/codex-default-config/subtool"
+printf '%s\n' 'AI_MODEL="stale-config-model"' > "$TMP_DIR/codex-default-config/subtool/config"
+PATH="$codex_bin:$PATH" \
+CODEX_ARGS_FILE="$codex_args_default" \
+CODEX_STDIN_FILE="$codex_stdin_default" \
+XDG_CONFIG_HOME="$TMP_DIR/codex-default-config" \
+XDG_CACHE_HOME="$TMP_DIR/codex-default-cache" \
+    "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex -o "$codex_out_default" >/dev/null 2>&1
+assert_file_exists "translate codex: file created" "$codex_out_default/basic.en.srt"
+assert_file_contains "translate codex: preserves timestamps" "$codex_out_default/basic.en.srt" '[0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}'
+assert_file_contains "translate codex: rebuilds translated text" "$codex_out_default/basic.en.srt" 'Welcome to Kolinski'
+assert_file_not_contains "translate codex: does not fall back to source text" "$codex_out_default/basic.en.srt" 'Willkommen bei Kolinski'
+assert_file_contains "translate codex: uses exec" "$codex_args_default" '^exec$'
+assert_file_contains "translate codex: uses ephemeral sessions" "$codex_args_default" '^--ephemeral$'
+assert_file_contains "translate codex: uses read-only sandbox" "$codex_args_default" '^read-only$'
+assert_file_contains "translate codex: skips repository requirement" "$codex_args_default" '^--skip-git-repo-check$'
+assert_file_not_contains "translate codex: keeps configured default model" "$codex_args_default" '^-m$|^--model$'
+assert_file_not_contains "translate codex: ignores saved model without --model" "$codex_args_default" '^stale-config-model$'
+assert_file_contains "translate codex: sends prompt on stdin" "$codex_stdin_default" 'Translate the following numbered subtitle lines'
+
+codex_args_model="$TMP_DIR/codex-model.args"
+codex_stdin_model="$TMP_DIR/codex-model.stdin"
+PATH="$codex_bin:$PATH" \
+CODEX_ARGS_FILE="$codex_args_model" \
+CODEX_STDIN_FILE="$codex_stdin_model" \
+XDG_CONFIG_HOME="$TMP_DIR/codex-model-config" \
+XDG_CACHE_HOME="$TMP_DIR/codex-model-cache" \
+    "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex -m codex-test-model -o "$codex_out_model" >/dev/null 2>&1
+assert_file_contains "translate codex: forwards explicit model flag" "$codex_args_model" '^-m$'
+assert_file_contains "translate codex: forwards explicit model value" "$codex_args_model" '^codex-test-model$'
+
+codex_out_malformed="$TMP_DIR/codex-malformed"
+mkdir -p "$codex_out_malformed"
+if PATH="$codex_bin:$PATH" \
+    CODEX_ARGS_FILE="$TMP_DIR/codex-malformed.args" \
+    CODEX_STDIN_FILE="$TMP_DIR/codex-malformed.stdin" \
+    CODEX_MALFORMED_OUTPUT=true \
+    XDG_CONFIG_HOME="$TMP_DIR/codex-malformed-config" \
+    XDG_CACHE_HOME="$TMP_DIR/codex-malformed-cache" \
+        "$SUBSYNC" translate "$FIXTURES/basic.srt" -l en --from de -p codex -o "$codex_out_malformed" >/dev/null 2>&1; then
+    malformed_rc=0
+else
+    malformed_rc=$?
+fi
+if [[ $malformed_rc -ne 0 ]]; then
+    assert "translate codex: rejects malformed output" 0
+else
+    assert "translate codex: rejects malformed output" 1
+fi
+if [[ ! -e "$codex_out_malformed/basic.en.srt" ]]; then
+    assert "translate codex: removes malformed output" 0
+else
+    assert "translate codex: removes malformed output" 1
+fi
+
+large_codex_srt="$TMP_DIR/codex-large.srt"
+for ((i=1; i<=1501; i++)); do
+    printf '%d\n00:00:01,000 --> 00:00:02,000\nSubtitle line %d\n\n' "$i" "$i"
+done > "$large_codex_srt"
+codex_out_failed="$TMP_DIR/codex-failed"
+mkdir -p "$codex_out_failed"
+if PATH="$codex_bin:$PATH" \
+    CODEX_ARGS_FILE="$TMP_DIR/codex-failed.args" \
+    CODEX_STDIN_FILE="$TMP_DIR/codex-failed.stdin" \
+    CODEX_FORCE_FAILURE=true \
+    XDG_CONFIG_HOME="$TMP_DIR/codex-failed-config" \
+    XDG_CACHE_HOME="$TMP_DIR/codex-failed-cache" \
+        "$SUBSYNC" translate "$large_codex_srt" -l fr --from en -p codex --chunk-size 500 --max-parallel 2 -o "$codex_out_failed" >/dev/null 2>&1; then
+    failed_chunks_rc=0
+else
+    failed_chunks_rc=$?
+fi
+if [[ $failed_chunks_rc -ne 0 ]]; then
+    assert "translate codex: all failed chunks return nonzero" 0
+else
+    assert "translate codex: all failed chunks return nonzero" 1
+fi
+if [[ ! -e "$codex_out_failed/codex-large.fr.srt" ]]; then
+    assert "translate codex: all failed chunks create no output" 0
+else
+    assert "translate codex: all failed chunks create no output" 1
+fi
 
 if [[ -n "${ZAI_API_KEY:-}" ]]; then
     "$SUBSYNC" translate "$FIXTURES/basic.srt" -l fr --from de -p zai-codeplan -o "$TMP_DIR" 2>&1
@@ -2431,7 +2541,11 @@ mkdir -p "$strip_test_dir"
 echo "video1.mp4" > "$strip_test_dir/.subtool_batch_state"
 echo "video2.mp4" >> "$strip_test_dir/.subtool_batch_state"
 # Run auto with --strip-existing on empty dir (no videos, but batch state should be cleared)
-"$SUBSYNC" auto "$strip_test_dir" -l fr --strip-existing 2>&1 >/dev/null || true
+if "$SUBSYNC" auto "$strip_test_dir" -l fr --strip-existing 2>&1 >/dev/null; then
+    assert "strip-existing: empty directory exits cleanly" 0
+else
+    assert "strip-existing: empty directory exits cleanly" 1
+fi
 if [[ -f "$strip_test_dir/.subtool_batch_state" ]]; then
     # File might exist but should be empty (cleared then no videos to add)
     if [[ -s "$strip_test_dir/.subtool_batch_state" ]]; then
@@ -2720,7 +2834,7 @@ _test_google_per_chunk() {
         orig_line_nums+=("$ln")
     done < "$map_file"
 
-    local -A replacements=()
+    local -a replacements=()
     local map_idx=0
     for ((i=0; i<num_chunks; i++)); do
         local chunk_out="$TMP_DIR/test_gchunk_${i}_out.txt"
@@ -2921,7 +3035,7 @@ _test_google_fewer_lines() {
         orig_line_nums+=("$ln")
     done < "$map_file"
 
-    local -A replacements=()
+    local -a replacements=()
     local map_idx=0
     for ((i=0; i<num_chunks; i++)); do
         local chunk_out="$TMP_DIR/test_fewer_chunk_${i}_out.txt"
@@ -3377,28 +3491,55 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 section "auto translation failure cleanup"
 
-# Bug 3 fix: when translation fails, downloaded fallback SRT should be cleaned up
-# Only testable when translate-shell (trans) is NOT available (otherwise translation succeeds)
+# Bug 3 fix: when translation fails, a downloaded fallback SRT should be cleaned up.
+# Mock the network boundary so the result never depends on live subtitle availability.
 if [[ -f "$_auto_video_de" ]]; then
-    if ! command -v trans &>/dev/null; then
-        _trfail_dir="$TMP_DIR/trfail_test"
-        mkdir -p "$_trfail_dir"
-        cp "$_auto_video_de" "$_trfail_dir/movie.mkv"
-        # Target FR, video has only DE subs → extract DE, translate DE→FR fails (no trans), cleanup DE
-        "$SUBSYNC" auto "$_trfail_dir/movie.mkv" -l fr --no-transcribe --skip-steps sync --no-embed 2>&1 >/dev/null || true
-        if [[ -f "$_trfail_dir/movie.de.srt" ]]; then
-            assert "trfail cleanup: fallback SRT removed after failed translation" 1
-        else
-            assert "trfail cleanup: fallback SRT removed after failed translation" 0
-        fi
-        # FR target should NOT exist (translation failed)
-        if [[ -f "$_trfail_dir/movie.fr.srt" ]]; then
-            assert "trfail cleanup: target SRT not created (translation failed)" 1
-        else
-            assert "trfail cleanup: target SRT not created (translation failed)" 0
-        fi
+    _trfail_dir="$TMP_DIR/trfail_test"
+    _trfail_bin="$TMP_DIR/trfail_bin"
+    mkdir -p "$_trfail_dir" "$_trfail_bin"
+    cp "$_auto_video_de" "$_trfail_dir/movie.mkv"
+
+    cat > "$_trfail_bin/curl" <<'MOCK_CURL'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_CURL_LOG"
+case "$*" in
+    *rest.opensubtitles.org*sub*languageid-fre*) printf '%s\n' '[]' ;;
+    *rest.opensubtitles.org*sub*languageid-ger*)
+        printf '%s\n' '[{"SubDownloadLink":"https://mock.invalid/subtitle.gz","SubFileName":"movie.de.srt","LanguageName":"German","SubDownloadsCnt":"1","SubRating":"10"}]'
+        ;;
+    *https://mock.invalid/subtitle.gz*)
+        output=""
+        while [[ $# -gt 0 ]]; do
+            if [[ "$1" == "-o" ]]; then output="$2"; break; fi
+            shift
+        done
+        [[ -n "$output" ]] || exit 1
+        gzip -c "$MOCK_SUBTITLE_FILE" > "$output"
+        ;;
+    *) exit 1 ;;
+esac
+MOCK_CURL
+    cat > "$_trfail_bin/trans" <<'MOCK_TRANS'
+#!/usr/bin/env bash
+exit 1
+MOCK_TRANS
+    chmod +x "$_trfail_bin/curl" "$_trfail_bin/trans"
+
+    MOCK_CURL_LOG="$TMP_DIR/trfail-curl.log" \
+    MOCK_SUBTITLE_FILE="$FIXTURES/basic.srt" \
+    PATH="$_trfail_bin:$PATH" \
+        "$SUBSYNC" auto "$_trfail_dir/movie.mkv" -l fr --fallback-langs de --no-transcribe --skip-steps sync --no-embed 2>&1 >/dev/null || true
+    assert_file_contains "trfail cleanup: fallback subtitle was downloaded" "$TMP_DIR/trfail-curl.log" 'mock.invalid/subtitle.gz'
+    if [[ -f "$_trfail_dir/movie.de.srt" ]]; then
+        assert "trfail cleanup: fallback SRT removed after failed translation" 1
     else
-        printf "  ${YELLOW}SKIP${NC}  auto translation failure cleanup: trans is available (translation would succeed)\n"
+        assert "trfail cleanup: fallback SRT removed after failed translation" 0
+    fi
+    # FR target should NOT exist (translation failed)
+    if [[ -f "$_trfail_dir/movie.fr.srt" ]]; then
+        assert "trfail cleanup: target SRT not created (translation failed)" 1
+    else
+        assert "trfail cleanup: target SRT not created (translation failed)" 0
     fi
 else
     assert "trfail cleanup: test video created" 1
@@ -3602,6 +3743,7 @@ out=$("$SUBSYNC" providers 2>&1 || true)
 assert_output_contains "providers: lists google" "$out" "google"
 assert_output_contains "providers: lists whisper" "$out" "whisper"
 assert_output_contains "providers: lists claude-code" "$out" "claude-code"
+assert_output_contains "providers: lists codex" "$out" "codex"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "batch command validation"

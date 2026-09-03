@@ -27,6 +27,7 @@ SOURCES="opensubtitles-org"
 FALLBACK_LANGS="en,de,es,pt"
 MAX_EPISODE=20
 AI_MODEL=""
+AI_MODEL_EXPLICIT=false
 AUTO_SELECT=false
 AUTO_EMBED=false
 NO_EMBED=false
@@ -158,61 +159,50 @@ detect_lang() {
 _detect_lang_offline() {
     local sample="$1"
     local all_langs="en fr de es it pt ru pl nl sv da no fi tr"
-
-    # Special characters (weight=3)
-    local -A char_patterns=(
-        [de]='ß|ü|Ü'
-        [fr]='[àâ]|[éèêë]|[ùû]|[îï]|œ|«|»'
-        [es]='ñ|¿|¡'
-        [pt]='[ãõ]'
-        [it]='[ìòù]'
-        [pl]='[ąćęłńóśźż]|[ĄĆĘŁŃÓŚŹŻ]'
-        [sv]='[åÅ]'
-        [da]='[æøÆØ]'
-        [no]='[æøåÆØÅ]'
-        [fi]='ää|öö'
-        [tr]='[şŞğĞıİ]|[çÇ]'
-        [ru]='[а-яА-ЯёЁ]'
-    )
-
-    # Distinctive words (weight=1)
-    local -A word_patterns=(
-        [en]='\b(the|you|and|this|that|have|with|what|would|there|been|they|your|just|like|about|know|could|should|where|their|because|which|into|before|after|between|those|these|very|when|will|than|only|other|were|them|then|also|going|really|right|think|want|doesn|didn|can|our|she|his|her)\b'
-        [fr]='\b(nous|vous|avec|dans|cette|mais|sont|pour|tout|elle|elles|aussi|comme|fait|avoir|être|même|encore|alors|rien|bien|très|peut|sans|faire|quel|dont|leur|quoi|jamais|toujours|après|avant|parce|depuis|comment|pourquoi|personne|quelque|maintenant|seulement)\b'
-        [de]='\b(ich|und|nicht|sich|auch|noch|wir|wenn|aber|dann|schon|wird|haben|kann|mein|dein|hier|dass|jetzt|immer|wieder|diese|keine|doch|sein|nach|beim|einen|einem|einer|alles|warum|nichts|etwas|vielleicht|natürlich|zwischen|müssen|können|werden|wollen|sollen)\b'
-        [es]='\b(pero|esto|tiene|muy|todo|están|porque|aquí|ahora|siempre|nunca|también|puede|hacer|ellos|nosotros|ustedes|bueno|cuando|donde|quien|nada|algo|mucho|todos|todas|después|antes|quiero|puedo|tengo|creo|estoy|vamos|verdad|entonces)\b'
-        [it]='\b(sono|questo|anche|loro|della|quello|tutto|perché|dove|quando|ancora|sempre|fatto|stato|bene|dopo|prima|adesso|niente|qualcosa|troppo|proprio|siamo|abbiamo|voglio|posso|stai|cosa|allora|grazie|senza|ogni|deve|hanno)\b'
-        [pt]='\b(isso|ele|ela|tem|muito|quando|ainda|agora|aqui|todo|todos|porque|depois|antes|sempre|nunca|nada|algo|mesmo|nossa|nosso|vocês|fazer|pode|obrigado|então|também|tudo|onde|quem|estou|tenho|acho|preciso)\b'
-        [ru]='\b(что|это|как|так|все|они|мне|его|она|было|уже|мой|тебя|если|нет|вот|тут|есть|был|еще|тоже|только|когда|потому|может|будет|надо|знаю|ничего|очень|сейчас|здесь|почему|хорошо|ладно|давай|пожалуйста|спасибо|никогда|всегда)\b'
-        [pl]='\b(jest|nie|tak|ale|jak|się|czy|już|jeszcze|tylko|tutaj|teraz|kiedy|dlaczego|gdzie|zawsze|nigdy|może|muszę|bardzo|dobrze|proszę|dzięki|wszystko|nic|ktoś|coś|trochę|właśnie|naprawdę|chcę|wiem|myślę|przepraszam|zobaczmy)\b'
-        [nl]='\b(het|een|van|dat|zijn|niet|met|wat|maar|ook|als|nog|wel|naar|hij|zij|dit|werd|hebben|deze|hun|zou|waar|daar|moet|goed|geen|hier|toen|heel|waarom|alles|niets|altijd|nooit|misschien|kunnen|willen|moeten|omdat)\b'
-        [sv]='\b(det|att|och|den|som|har|inte|med|för|var|kan|ska|vill|han|hon|alla|från|efter|bara|här|där|mycket|aldrig|alltid|varför|redan|sedan|kanske|ganska|också|igen|något|ingenting|behöver|gärna|tack)\b'
-        [da]='\b(det|og|har|ikke|med|den|som|kan|han|hun|vil|skal|var|fra|her|der|men|alle|efter|bare|hvad|hvor|hvorfor|aldrig|altid|noget|ingenting|måske|også|igen|allerede|fordi|godt|meget|lidt|velkommen|tak)\b'
-        [no]='\b(det|og|har|ikke|med|den|som|kan|han|hun|vil|skal|var|fra|her|der|men|alle|etter|bare|hva|hvor|hvorfor|aldri|alltid|kanskje|også|igjen|allerede|fordi|veldig|mye|litt|velkommen|takk|noen|noe|ingenting)\b'
-        [fi]='\b(hän|mutta|niin|myös|vain|tämä|nyt|kun|jos|tai|ovat|ole|miksi|missä|sitten|vielä|aina|koskaan|ehkä|hyvin|paljon|kiitos|anteeksi|tiedän|haluan|pitää|minun|sinun|meidän|täällä|siellä|kaikki|mitään|jotain|mikään|olet|olen|emme|eivät|minä|sinä|hyvä|pois|heitä|meillä|heillä|tämän|tuolla|täytyy|tarpeeksi|ymmärrän)\b'
-        [tr]='\b(bir|ben|sen|biz|siz|var|yok|ama|için|ile|gibi|daha|çok|kadar|sonra|önce|şimdi|burada|orada|neden|nasıl|nerede|zaman|hiç|hep|belki|tamam|teşekkür|lütfen|evet|hayır|bence|iyi|kötü|güzel)\b'
-    )
-
-    local -A scores
-    local lang
-    for lang in $all_langs; do scores[$lang]=0; done
-
-    local count
-    for lang in $all_langs; do
-        [[ -z "${char_patterns[$lang]:-}" ]] && continue
-        count=$(echo "$sample" | grep -oE "${char_patterns[$lang]}" 2>/dev/null | wc -l) || true
-        scores[$lang]=$(( ${scores[$lang]} + (count + 0) * 3 ))
-    done
-
-    for lang in $all_langs; do
-        count=$(echo "$sample" | grep -oiE "${word_patterns[$lang]}" 2>/dev/null | wc -l) || true
-        scores[$lang]=$(( ${scores[$lang]} + (count + 0) ))
-    done
-
     local best_lang="" best_score=0
+    local lang char_pattern word_pattern char_count word_count score
     for lang in $all_langs; do
-        if [[ ${scores[$lang]} -gt $best_score ]]; then
-            best_score=${scores[$lang]}
+        char_pattern=""
+        case "$lang" in
+            de) char_pattern='ß|ü|Ü' ;;
+            fr) char_pattern='[àâ]|[éèêë]|[ùû]|[îï]|œ|«|»' ;;
+            es) char_pattern='ñ|¿|¡' ;;
+            pt) char_pattern='[ãõ]' ;;
+            it) char_pattern='[ìòù]' ;;
+            pl) char_pattern='[ąćęłńóśźż]|[ĄĆĘŁŃÓŚŹŻ]' ;;
+            sv) char_pattern='[åÅ]' ;;
+            da) char_pattern='[æøÆØ]' ;;
+            no) char_pattern='[æøåÆØÅ]' ;;
+            fi) char_pattern='ää|öö' ;;
+            tr) char_pattern='[şŞğĞıİ]|[çÇ]' ;;
+            ru) char_pattern='[а-яА-ЯёЁ]' ;;
+        esac
+
+        case "$lang" in
+            en) word_pattern='\b(the|you|and|this|that|have|with|what|would|there|been|they|your|just|like|about|know|could|should|where|their|because|which|into|before|after|between|those|these|very|when|will|than|only|other|were|them|then|also|going|really|right|think|want|doesn|didn|can|our|she|his|her)\b' ;;
+            fr) word_pattern='\b(nous|vous|avec|dans|cette|mais|sont|pour|tout|elle|elles|aussi|comme|fait|avoir|être|même|encore|alors|rien|bien|très|peut|sans|faire|quel|dont|leur|quoi|jamais|toujours|après|avant|parce|depuis|comment|pourquoi|personne|quelque|maintenant|seulement)\b' ;;
+            de) word_pattern='\b(ich|und|nicht|sich|auch|noch|wir|wenn|aber|dann|schon|wird|haben|kann|mein|dein|hier|dass|jetzt|immer|wieder|diese|keine|doch|sein|nach|beim|einen|einem|einer|alles|warum|nichts|etwas|vielleicht|natürlich|zwischen|müssen|können|werden|wollen|sollen)\b' ;;
+            es) word_pattern='\b(pero|esto|tiene|muy|todo|están|porque|aquí|ahora|siempre|nunca|también|puede|hacer|ellos|nosotros|ustedes|bueno|cuando|donde|quien|nada|algo|mucho|todos|todas|después|antes|quiero|puedo|tengo|creo|estoy|vamos|verdad|entonces)\b' ;;
+            it) word_pattern='\b(sono|questo|anche|loro|della|quello|tutto|perché|dove|quando|ancora|sempre|fatto|stato|bene|dopo|prima|adesso|niente|qualcosa|troppo|proprio|siamo|abbiamo|voglio|posso|stai|cosa|allora|grazie|senza|ogni|deve|hanno)\b' ;;
+            pt) word_pattern='\b(isso|ele|ela|tem|muito|quando|ainda|agora|aqui|todo|todos|porque|depois|antes|sempre|nunca|nada|algo|mesmo|nossa|nosso|vocês|fazer|pode|obrigado|então|também|tudo|onde|quem|estou|tenho|acho|preciso)\b' ;;
+            ru) word_pattern='\b(что|это|как|так|все|они|мне|его|она|было|уже|мой|тебя|если|нет|вот|тут|есть|был|еще|тоже|только|когда|потому|может|будет|надо|знаю|ничего|очень|сейчас|здесь|почему|хорошо|ладно|давай|пожалуйста|спасибо|никогда|всегда)\b' ;;
+            pl) word_pattern='\b(jest|nie|tak|ale|jak|się|czy|już|jeszcze|tylko|tutaj|teraz|kiedy|dlaczego|gdzie|zawsze|nigdy|może|muszę|bardzo|dobrze|proszę|dzięki|wszystko|nic|ktoś|coś|trochę|właśnie|naprawdę|chcę|wiem|myślę|przepraszam|zobaczmy)\b' ;;
+            nl) word_pattern='\b(het|een|van|dat|zijn|niet|met|wat|maar|ook|als|nog|wel|naar|hij|zij|dit|werd|hebben|deze|hun|zou|waar|daar|moet|goed|geen|hier|toen|heel|waarom|alles|niets|altijd|nooit|misschien|kunnen|willen|moeten|omdat)\b' ;;
+            sv) word_pattern='\b(det|att|och|den|som|har|inte|med|för|var|kan|ska|vill|han|hon|alla|från|efter|bara|här|där|mycket|aldrig|alltid|varför|redan|sedan|kanske|ganska|också|igen|något|ingenting|behöver|gärna|tack)\b' ;;
+            da) word_pattern='\b(det|og|har|ikke|med|den|som|kan|han|hun|vil|skal|var|fra|her|der|men|alle|efter|bare|hvad|hvor|hvorfor|aldrig|altid|noget|ingenting|måske|også|igen|allerede|fordi|godt|meget|lidt|velkommen|tak)\b' ;;
+            no) word_pattern='\b(det|og|har|ikke|med|den|som|kan|han|hun|vil|skal|var|fra|her|der|men|alle|etter|bare|hva|hvor|hvorfor|aldri|alltid|kanskje|også|igjen|allerede|fordi|veldig|mye|litt|velkommen|takk|noen|noe|ingenting)\b' ;;
+            fi) word_pattern='\b(hän|mutta|niin|myös|vain|tämä|nyt|kun|jos|tai|ovat|ole|miksi|missä|sitten|vielä|aina|koskaan|ehkä|hyvin|paljon|kiitos|anteeksi|tiedän|haluan|pitää|minun|sinun|meidän|täällä|siellä|kaikki|mitään|jotain|mikään|olet|olen|emme|eivät|minä|sinä|hyvä|pois|heitä|meillä|heillä|tämän|tuolla|täytyy|tarpeeksi|ymmärrän)\b' ;;
+            tr) word_pattern='\b(bir|ben|sen|biz|siz|var|yok|ama|için|ile|gibi|daha|çok|kadar|sonra|önce|şimdi|burada|orada|neden|nasıl|nerede|zaman|hiç|hep|belki|tamam|teşekkür|lütfen|evet|hayır|bence|iyi|kötü|güzel)\b' ;;
+        esac
+
+        char_count=0
+        if [[ -n "$char_pattern" ]]; then
+            char_count=$(printf '%s\n' "$sample" | grep -oE "$char_pattern" 2>/dev/null | wc -l | tr -d ' ') || true
+        fi
+        word_count=$(printf '%s\n' "$sample" | grep -oiE "$word_pattern" 2>/dev/null | wc -l | tr -d ' ') || true
+        score=$((char_count * 3 + word_count))
+        if [[ $score -gt $best_score ]]; then
+            best_score=$score
             best_lang="$lang"
         fi
     done
@@ -239,7 +229,7 @@ init_config() {
         cat > "$CONFIG_FILE" << 'CONF'
 # subtool configuration
 
-# API keys for AI translation (optional — claude-code works without a key)
+# API keys for AI translation (optional — claude-code and codex work without API keys)
 OPENAI_API_KEY=""
 ANTHROPIC_API_KEY=""
 MISTRAL_API_KEY=""
@@ -252,8 +242,8 @@ OPENAI_WHISPER_API_KEY=""
 # Default language (e.g., fr, en, de — so you don't need -l every time)
 DEFAULT_LANG=""
 
-# Default AI provider: claude-code, zai-codeplan, openai, claude, mistral, gemini
-DEFAULT_AI_PROVIDER="google"  # or: claude-code, openai, claude, mistral, gemini
+# Default AI provider: codex, claude-code, zai-codeplan, openai, claude, mistral, gemini
+DEFAULT_AI_PROVIDER="google"  # or: codex, claude-code, zai-codeplan, openai, claude, mistral, gemini
 
 # Default models (leave empty to use defaults)
 MODEL_CLAUDE_CODE=""
@@ -839,7 +829,8 @@ translate_with_google() {
     local input="$1" output="$2" src_lang="$3" target_lang="$4"
 
     if ! command -v trans &>/dev/null; then
-        die "translate-shell required. Install it: brew install translate-shell"
+        err "translate-shell required. Install it: brew install translate-shell"
+        return 1
     fi
 
     # Step 1: Extract only text lines from SRT (skip indices, timestamps, blanks)
@@ -901,6 +892,19 @@ translate_with_google() {
         progress "$bend" "$num_chunks" "Translating"
     done
 
+    # A failed translate-shell process still leaves an empty redirected file.
+    # Do not rebuild an apparently successful SRT entirely from source text.
+    local translated_chunks=0
+    for ((i=0; i<num_chunks; i++)); do
+        [[ -s "${chunk_prefix}_${i}_out.txt" ]] && ((translated_chunks++)) || true
+    done
+    if [[ $translated_chunks -eq 0 ]]; then
+        rm -f "$text_file" "$map_file" "${chunk_prefix}"_*.txt 2>/dev/null || true
+        rm -f "$output"
+        err "Google Translate produced no translated output"
+        return 1
+    fi
+
     # Step 3+4: Map translations back per-chunk
     # (avoids line-count drift when trans adds/removes trailing blank lines)
     local -a orig_line_nums=()
@@ -908,7 +912,7 @@ translate_with_google() {
         orig_line_nums+=("$ln")
     done < "$map_file"
 
-    local -A replacements=()
+    local -a replacements=()
     local map_idx=0
     for ((i=0; i<num_chunks; i++)); do
         local chunk_out="${chunk_prefix}_${i}_out.txt"
@@ -1016,6 +1020,52 @@ translate_with_claude_code() {
         return 1
     fi
     rm -f "$claude_err"
+}
+
+translate_with_codex() {
+    local input="$1" output="$2" src_lang="$3" target_lang="$4"
+    local model=""
+    $AI_MODEL_EXPLICIT && model="${AI_MODEL:-}"
+    info "Translating with Codex CLI${model:+ ($model)}..."
+
+    if ! command -v codex &>/dev/null; then
+        err "Codex CLI not installed. Install it: npm install -g @openai/codex"
+        return 1
+    fi
+
+    local codex_err="${output}.codex_err"
+    local codex_args=(exec --ephemeral --skip-git-repo-check -s read-only)
+    [[ -n "$model" ]] && codex_args+=(-m "$model")
+
+    local exit_code=0
+    { _translate_prompt "$src_lang" "$target_lang"; printf '\n\n'; cat "$input"; } |
+        codex "${codex_args[@]}" - > "$output" 2>"$codex_err" || exit_code=$?
+
+    if [[ $exit_code -ne 0 ]]; then
+        [[ -s "$codex_err" ]] && warn "$(head -5 "$codex_err")"
+        [[ -s "$output" ]] && warn "$(head -3 "$output")"
+        rm -f "$output" "$codex_err"
+        err "Codex translation failed (exit code $exit_code)"
+        return 1
+    fi
+    if [[ ! -s "$output" ]]; then
+        [[ -s "$codex_err" ]] && warn "Codex stderr: $(head -5 "$codex_err")"
+        rm -f "$codex_err"
+        err "Codex produced empty output"
+        return 1
+    fi
+
+    local expected_numbers actual_numbers valid_lines output_lines
+    expected_numbers=$(sed -nE 's/^([0-9]+):.*/\1/p' "$input")
+    actual_numbers=$(sed -nE 's/^([0-9]+):[[:space:]].+/\1/p' "$output")
+    valid_lines=$(printf '%s\n' "$actual_numbers" | grep -c . 2>/dev/null || true)
+    output_lines=$(grep -cvE '^[[:space:]]*$|^```' "$output" 2>/dev/null || true)
+    if [[ -z "$expected_numbers" || "$actual_numbers" != "$expected_numbers" || "$valid_lines" -ne "$output_lines" ]]; then
+        rm -f "$output" "$codex_err"
+        err "Codex returned malformed subtitle lines"
+        return 1
+    fi
+    rm -f "$codex_err"
 }
 
 translate_with_zai_codeplan() {
@@ -1181,6 +1231,7 @@ _translate_dispatch() {
     case "$provider" in
         google)      translate_with_google "$input" "$output" "$src_lang" "$target_lang" ;;
         claude-code) translate_with_claude_code "$input" "$output" "$src_lang" "$target_lang" ;;
+        codex)       translate_with_codex "$input" "$output" "$src_lang" "$target_lang" ;;
         zai-codeplan) translate_with_zai_codeplan "$input" "$output" "$src_lang" "$target_lang" ;;
         openai)      translate_with_openai "$input" "$output" "$src_lang" "$target_lang" ;;
         claude)      translate_with_claude "$input" "$output" "$src_lang" "$target_lang" ;;
@@ -1370,11 +1421,11 @@ translate_subtitle() {
         total_lines=$(wc -l < "$text_file" | tr -d ' ')
 
         # Single-call threshold depends on provider output capacity
-        # claude-code/claude ~16k output tokens ≈ 1500 subtitle lines safely
+        # CLI/API providers use conservative batches of 1500 subtitle lines.
         # Google handles its own chunking (separate path above)
         local single_call_threshold
         case "$provider" in
-            claude-code|claude|openai|mistral|zai-codeplan) single_call_threshold=1500 ;;
+            codex|claude-code|claude|openai|mistral|zai-codeplan) single_call_threshold=1500 ;;
             gemini) single_call_threshold=5000 ;;
             *) single_call_threshold=1500 ;;
         esac
@@ -1436,11 +1487,13 @@ translate_subtitle() {
             done
 
             # Reassemble translated text (retry failed chunks once before fallback)
+            local successful_chunks=0
             for ((i=0; i<num_chunks; i++)); do
                 local chunk_out="$CACHE_DIR/text_chunk_$$_${i}_out.txt"
                 local chunk_in="$CACHE_DIR/text_chunk_$$_${i}.txt"
                 if [[ -s "$chunk_out" ]]; then
                     cat "$chunk_out" >> "$text_translated"
+                    successful_chunks=$((successful_chunks + 1))
                     # Detect truncated LLM output and pad with original text to maintain alignment
                     local out_count in_count
                     out_count=$(grep -cvE '^[[:space:]]*$|^\`\`\`' "$chunk_out" 2>/dev/null || echo "0")
@@ -1453,6 +1506,7 @@ translate_subtitle() {
                     warn "Chunk $((i+1)) failed — retrying..."
                     if _translate_dispatch "$chunk_in" "$chunk_out" "$src_lang" "$target_lang" "$provider" 2>/dev/null && [[ -s "$chunk_out" ]]; then
                         cat "$chunk_out" >> "$text_translated"
+                        successful_chunks=$((successful_chunks + 1))
                         info "Chunk $((i+1)) retry OK"
                     else
                         warn "Chunk $((i+1)) retry failed — keeping original text"
@@ -1461,6 +1515,12 @@ translate_subtitle() {
                 fi
                 rm -f "$chunk_in" "$chunk_out"
             done
+
+            if [[ $successful_chunks -eq 0 ]]; then
+                rm -f "$structure_file" "$text_file" "$text_translated"
+                err "Translation failed: no chunk was translated"
+                return 1
+            fi
         fi
 
         # Rebuild SRT from original timestamps + translated text
@@ -1549,7 +1609,7 @@ ${BOLD}OPTIONS${NC}
     -s, --season <num>        Season number (series)
     -e, --episode <num>       Episode number (series)
     -o, --output <dir>        Output directory (default: .)
-    -p, --provider <provider> Translation provider (google|claude-code|openai|claude|mistral|gemini)
+    -p, --provider <provider> Translation provider (google|codex|claude-code|zai-codeplan|openai|claude|mistral|gemini)
     -m, --model <model>       AI model to use (overrides provider default model)
     --sources <src1,src2>     Sources (default: opensubtitles-org. Available: podnapisi)
     --from <lang>             Source language for translation
@@ -1697,6 +1757,9 @@ cmd_providers() {
     if command -v claude &>/dev/null; then status="${GREEN}OK${NC}"; else status="${RED}N/A${NC}"; fi
     printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "claude-code" "$MODEL_CLAUDE_CODE" "Claude Code CLI (effort low)"
 
+    if command -v codex &>/dev/null; then status="${GREEN}OK${NC}"; else status="${RED}N/A${NC}"; fi
+    printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "codex" "CLI default" "OpenAI Codex CLI (ephemeral, read-only)"
+
     if [[ -n "${ZAI_API_KEY:-}" ]]; then status="${GREEN}OK${NC}"; else status="${RED}NO KEY${NC}"; fi
     printf "  ${BOLD}%-15s${NC} ${status}       %-25s %s\n" "zai-codeplan" "$MODEL_ZAI_CODEPLAN" "Z.ai Coding Plan API"
 
@@ -1822,6 +1885,11 @@ cmd_check() {
         printf "  ${GREEN}OK${NC}  %-15s\n" "claude-code"
     else
         printf "  ${YELLOW}N/A${NC}  %-15s (provider claude-code)\n" "claude CLI"
+    fi
+    if command -v codex &>/dev/null; then
+        printf "  ${GREEN}OK${NC}  %-15s %s\n" "codex" "$(command -v codex)"
+    else
+        printf "  ${YELLOW}N/A${NC}  %-15s (provider codex)\n" "codex CLI"
     fi
     if command -v whisper &>/dev/null; then
         printf "  ${GREEN}OK${NC}  %-15s %s\n" "whisper" "$(command -v whisper)"
@@ -2531,6 +2599,10 @@ cmd_auto() {
 
     total=${#video_files[@]}
     info "$total videos found"
+
+    # Bash 3.2 treats an empty array expansion as an unbound variable under
+    # `set -u`, even when the array was explicitly initialized.
+    [[ $total -eq 0 ]] && return 0
 
     for video_file in "${video_files[@]}"; do
         local dir_name base_name name_no_ext
@@ -4986,7 +5058,7 @@ _subtool() {
     opts="$opts"
 
     case "\$prev" in
-        -p|--provider)  COMPREPLY=(\$(compgen -W "google claude-code openai claude mistral gemini zai-codeplan" -- "\$cur")); return ;;
+        -p|--provider)  COMPREPLY=(\$(compgen -W "google codex claude-code openai claude mistral gemini zai-codeplan" -- "\$cur")); return ;;
         --to)           COMPREPLY=(\$(compgen -W "srt vtt ass" -- "\$cur")); return ;;
         --sources)      COMPREPLY=(\$(compgen -W "opensubtitles-org podnapisi" -- "\$cur")); return ;;
         --transcribe-provider) COMPREPLY=(\$(compgen -W "whisper openai-api" -- "\$cur")); return ;;
@@ -5068,8 +5140,8 @@ _subtool() {
                         '--episode[Episode]:episode:' \\
                         '-o[Output directory]:dir:_files -/' \\
                         '--output[Output directory]:dir:_files -/' \\
-                        '-p[Translation provider]:provider:(google claude-code openai claude mistral gemini zai-codeplan)' \\
-                        '--provider[Translation provider]:provider:(google claude-code openai claude mistral gemini zai-codeplan)' \\
+                        '-p[Translation provider]:provider:(google codex claude-code openai claude mistral gemini zai-codeplan)' \\
+                        '--provider[Translation provider]:provider:(google codex claude-code openai claude mistral gemini zai-codeplan)' \\
                         '-m[AI model]:model:' \\
                         '--model[AI model]:model:' \\
                         '--sources[Subtitle sources]:sources:(opensubtitles-org podnapisi)' \\
@@ -5158,7 +5230,7 @@ complete -c subtool -s i -l imdb -d 'IMDb ID' -x
 complete -c subtool -s s -l season -d 'Season number' -x
 complete -c subtool -s e -l episode -d 'Episode number' -x
 complete -c subtool -s o -l output -d 'Output directory' -r -F
-complete -c subtool -s p -l provider -d 'Translation provider' -x -a 'google claude-code openai claude mistral gemini zai-codeplan'
+complete -c subtool -s p -l provider -d 'Translation provider' -x -a 'google codex claude-code openai claude mistral gemini zai-codeplan'
 complete -c subtool -s m -l model -d 'AI model' -x
 complete -c subtool -l sources -d 'Subtitle sources' -x -a 'opensubtitles-org podnapisi'
 complete -c subtool -l from -d 'Source language' -x
@@ -5324,7 +5396,7 @@ Episode number
 Output directory (default: .)
 .TP
 \fB\-p\fR, \fB\-\-provider\fR \fIprovider\fR
-Translation provider (google|claude-code|openai|claude|mistral|gemini|zai-codeplan)
+Translation provider (google|codex|claude-code|openai|claude|mistral|gemini|zai-codeplan)
 .TP
 \fB\-m\fR, \fB\-\-model\fR \fImodel\fR
 AI model to use
@@ -5530,7 +5602,7 @@ parse_args() {
             -e|--episode)  EPISODE="$2"; shift 2 ;;
             -o|--output)   OUTPUT_DIR="$2"; shift 2 ;;
             -p|--provider) AI_PROVIDER="$2"; shift 2 ;;
-            -m|--model)    AI_MODEL="$2"; shift 2 ;;
+            -m|--model)    AI_MODEL="$2"; AI_MODEL_EXPLICIT=true; shift 2 ;;
             --sources)     SOURCES="$2"; shift 2 ;;
             --from)        SRC_LANG="$2"; shift 2 ;;
             --fallback-langs) FALLBACK_LANGS="$2"; shift 2 ;;
@@ -5602,7 +5674,7 @@ parse_args() {
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
-    # Kill child processes (background translation chunks, claude -p, etc.)
+    # Kill child processes (background translation chunks, AI CLIs, etc.)
     pkill -P $$ 2>/dev/null || true
     local pids
     pids=$(jobs -p 2>/dev/null) || true
@@ -5613,6 +5685,7 @@ cleanup() {
     rm -f "$CACHE_DIR"/text_chunk_$$_*.txt 2>/dev/null || true
     rm -f "$CACHE_DIR"/translate_*.txt 2>/dev/null || true
     rm -f "$CACHE_DIR"/claude_err_*.txt "$CACHE_DIR"/*.claude_err 2>/dev/null || true
+    rm -f "$CACHE_DIR"/*_$$.txt.codex_err "$CACHE_DIR"/*_$$_*.txt.codex_err 2>/dev/null || true
     rm -f "$CACHE_DIR"/trans_chunk_$$_*.txt 2>/dev/null || true
     rm -f "$CACHE_DIR"/trans_text_$$.txt "$CACHE_DIR"/trans_map_$$.txt 2>/dev/null || true
 }
@@ -5620,6 +5693,9 @@ cleanup() {
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
     load_config
+    # Configuration may provide AI_MODEL for API providers, but only the CLI
+    # parser can mark a Codex model override as explicit.
+    AI_MODEL_EXPLICIT=false
     parse_args "$@"
 
     [[ -z "$COMMAND" ]] && { usage; exit 0; }

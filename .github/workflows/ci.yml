@@ -23,10 +23,18 @@ jobs:
 
       - name: Install deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install bash ffmpeg jq
+        run: brew install ffmpeg jq
 
-      - name: Run tests
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
         run: ./tests/run_tests.sh
+
+      - name: Run tests with system Bash 3.2 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/bash3-bin"
+          ln -s /bin/bash "$RUNNER_TEMP/bash3-bin/bash"
+          PATH="$RUNNER_TEMP/bash3-bin:$PATH" /bin/bash tests/run_tests.sh
 
   test-api:
     name: "Tests API (traduction)"
