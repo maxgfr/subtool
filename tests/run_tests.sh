@@ -3781,6 +3781,14 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+section "auto default subtitle selection"
+
+out=$("${BASH}" "$PROJECT_DIR/tests/auto_default_tracks.sh" 2>&1) && default_tracks_status=0 || default_tracks_status=$?
+assert_exit_code "auto selects the requested subtitles (including repeat and mix)" 0 "$default_tracks_status"
+if [[ "$default_tracks_status" -ne 0 ]]; then
+    printf '%s\n' "$out"
+fi
+
 section "force-embed (multiple tracks)"
 
 if [[ -f "$_auto_video_defr" ]]; then

@@ -101,6 +101,13 @@ subtool transcribe movie.mkv --transcribe-provider openai-api  # use cloud API
 
 ## Usage
 
+When `auto` embeds subtitles, the requested language becomes the default subtitle
+track. With `--mix`, the bilingual track becomes the default; with multiple target
+languages, the last processed language becomes the default. Existing subtitle
+tracks remain available, but their default and forced flags are cleared so they
+do not take priority. Reopen the video in your player after `auto` finishes to
+load the updated tracks; explicit player preferences can override the default.
+
 ```bash
 # Auto mode: download + translate + sync + embed — one command
 subtool auto ~/Movies/Die.Discounter -l fr               # all-in-one (Google Translate)

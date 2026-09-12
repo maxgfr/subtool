@@ -3624,6 +3624,7 @@ _detect_stream_lang() {
 # Helper for auto-embed (embed srt into video, replace original)
 _auto_embed() {
     local video="$1" sub="$2" lang="$3" title_override="${4:-}"
+    local make_default="${5:-true}"
 
     # Validate SRT before embedding to prevent video corruption
     if ! validate_srt "$sub"; then
@@ -3692,10 +3693,20 @@ _auto_embed() {
         [[ -z "$s_title" ]] && s_title=$(_lang_title "$s_lang")
         s_lang_iso=$(_lang_to_iso639_2 "$s_lang")
         ffmpeg_cmd+=(-metadata:s:s:"$sidx" language="$s_lang_iso" -metadata:s:s:"$sidx" title="$s_title")
+        if [[ "$make_default" == "true" ]]; then
+            # Old forced/default tracks can override the language requested by
+            # auto. Preserve unrelated flags, such as hearing_impaired.
+            ffmpeg_cmd+=(-disposition:s:"$sidx" -default-forced)
+        fi
     done
 
     # Set metadata for the new subtitle stream
     ffmpeg_cmd+=(-metadata:s:s:"$sub_count" language="$lang_iso" -metadata:s:s:"$sub_count" title="$lang_title")
+    if [[ "$make_default" == "true" ]]; then
+        ffmpeg_cmd+=(-disposition:s:"$sub_count" default)
+    else
+        ffmpeg_cmd+=(-disposition:s:"$sub_count" 0)
+    fi
     ffmpeg_cmd+=("$tmp_video" -y)
 
     if "${ffmpeg_cmd[@]}" 2>/dev/null && [[ -s "$tmp_video" ]]; then
@@ -3725,7 +3736,7 @@ _auto_embed_with_mix() {
 
     # Embed mix source language subtitle as additional track if available
     if [[ -n "$source_srt" && -f "$source_srt" && -n "$source_lang" ]]; then
-        _auto_embed "$video" "$source_srt" "$source_lang" ""
+        _auto_embed "$video" "$source_srt" "$source_lang" "" false
     fi
 
     # Embed mix subtitle as additional track if available
@@ -3735,6 +3746,7 @@ _auto_embed_with_mix() {
 
     STRIP_EXISTING="$_save_strip"
     FORCE_EMBED="$_save_force"
+    info "Reopen the video in your player to load the updated subtitle tracks and default selection."
     return 0
 }
 
